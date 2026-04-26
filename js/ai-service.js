@@ -292,6 +292,30 @@ const AIService = {
     },
 
     /**
+     * Canon guardrail instruction for all analyses.
+     */
+    getCanonGuardrail(storyData) {
+        const canon = {
+            characters: (storyData?.characters || []).filter(c => c && c.isCanon).map(c => ({
+                id: c.id, name: c.name, type: c.type, role: c.role, background: c.background
+            })),
+            timelineEvents: (storyData?.events || []).filter(e => e && e.isCanon).map(e => ({
+                id: e.id, title: e.title, beat: e.beat, period: e.period, description: e.description
+            })),
+            workItems: (storyData?.workItems || []).filter(w => w && w.isCanon).map(w => ({
+                id: w.id, title: w.title, category: w.category
+            }))
+        };
+
+        return `IMPORTANT: Items marked with isCanon: true are OFFICIAL canon and must never be contradicted, deleted, or overwritten.
+Treat them as absolute truth for this C-drama story.
+Any new suggestions must be marked as draft (isCanon: false) and clearly labeled as such.
+
+CANON (absolute truth):
+${JSON.stringify(canon, null, 2)}`;
+    },
+
+    /**
      * Analyze full story
      */
     async analyzeStory(storyData) {
@@ -302,16 +326,39 @@ Timeline: ${storyData.events.map(e => `${e.title} (${e.period}, Beat ${e.beat}):
 Plot: ${storyData.plot.map(p => `${p.act}: ${p.content}`).join('\n')}
 `;
 
-        const prompt = `You are a professional story analyst. Analyze this C drama story and provide:
-1. Overall story strengths
-2. Potential plot holes or inconsistencies
-3. Character development issues
-4. Pacing concerns
-5. Suggestions for improvement
+        const prompt = `You are a professional story analyst.
 
-Story:\n${storyContext}
+Analyze this C-drama story and return ONLY valid JSON (no markdown, no code fences).
 
-Please be constructive and specific.`;
+${this.getCanonGuardrail(storyData)}
+
+Return this exact schema:
+{
+  "analysis": {
+    "strengths": ["..."],
+    "risks": ["..."],
+    "plotIssues": ["..."],
+    "characterIssues": ["..."],
+    "pacingConcerns": ["..."]
+  },
+  "suggestedActions": [
+    {
+      "actionType": "timeline_event|work_item|character_arc_update",
+      "title": "...",
+      "description": "...",
+      "relatedTo": ["Character:Name", "Event:Title", "Arc:Theme", "Politics:Section"]
+    }
+  ]
+}
+
+Guidance:
+- Provide 6-15 suggestedActions total.
+- Use concise, actionable titles.
+- If actionType is timeline_event, describe what happens in the scene and where it fits.
+- If actionType is work_item, give a clear task and suggested category.
+- If actionType is character_arc_update, include which character(s) and what to change.
+
+STORY:\n${storyContext}`;
 
         return this.callAI(prompt, 800);
     },
@@ -323,6 +370,8 @@ Please be constructive and specific.`;
         const storyContext = JSON.stringify(storyData, null, 2);
         const prompt = `Analyze this story data for continuity issues:
 ${storyContext}
+
+${this.getCanonGuardrail(storyData)}
 
 Look for:
 1. Timeline inconsistencies
@@ -345,6 +394,8 @@ Format as a clear list of issues found.`;
         ).join('\n\n');
 
         const prompt = `Evaluate the character development in this story:\n${charContext}
+
+${this.getCanonGuardrail(storyData)}
 
 Analyze:
 1. Character arcs - do they show growth?
@@ -369,6 +420,8 @@ Plot Outline: ${storyData.plot.map(p => `${p.act}: ${p.content}`).join('\n')}
 
         const prompt = `Analyze the plot structure of this C drama story:
 ${plotContext}
+
+${this.getCanonGuardrail(storyData)}
 
 Evaluate:
 1. Does it follow Dan Harmon's Story Circle effectively?

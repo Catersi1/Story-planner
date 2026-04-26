@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>C Drama Story Planner - AI Enhanced</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
     <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
@@ -16,6 +17,24 @@
                     <div>
                         <div class="app-name">C Drama Story Planner</div>
                         <div class="app-subtitle">Characters • Beats • Plot • Politics • Visual Storyboard</div>
+                        <div id="canonStatusIndicator" class="text-sm text-gray-600" style="margin-top: 0.35rem; cursor: pointer;" onclick="App.goToDraftsReview()" title="Click to review drafts"></div>
+                        <div style="margin-top: 0.6rem;">
+                            <input id="globalSearchInput" class="form-input" style="margin:0; max-width: 520px;" placeholder="Search characters, timeline, tasks, relationships..." oninput="App.onGlobalSearchQuery(this.value)">
+                            <div class="modal-tabs" style="margin-top: 0.5rem;">
+                                <button class="modal-tab" id="chipTypeFriendly" onclick="App.toggleGlobalChip('characterType','friendly')">🟢 Friendly</button>
+                                <button class="modal-tab" id="chipTypeAntagonist" onclick="App.toggleGlobalChip('characterType','antagonist')">🔴 Antagonist</button>
+                                <button class="modal-tab" id="chipTypeGray" onclick="App.toggleGlobalChip('characterType','gray')">⚪ Gray</button>
+                                <span style="width: 0.75rem;"></span>
+                                <button class="modal-tab" id="chipBeat1" onclick="App.toggleGlobalChip('beat','1')">Beat 1</button>
+                                <button class="modal-tab" id="chipBeat2" onclick="App.toggleGlobalChip('beat','2')">Beat 2</button>
+                                <button class="modal-tab" id="chipBeat3" onclick="App.toggleGlobalChip('beat','3')">Beat 3</button>
+                                <button class="modal-tab" id="chipBeat4" onclick="App.toggleGlobalChip('beat','4')">Beat 4</button>
+                                <button class="modal-tab" id="chipBeat5" onclick="App.toggleGlobalChip('beat','5')">Beat 5</button>
+                                <button class="modal-tab" id="chipBeat6" onclick="App.toggleGlobalChip('beat','6')">Beat 6</button>
+                                <button class="modal-tab" id="chipBeat7" onclick="App.toggleGlobalChip('beat','7')">Beat 7</button>
+                                <button class="modal-tab" id="chipBeat8" onclick="App.toggleGlobalChip('beat','8')">Beat 8</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -30,6 +49,7 @@
             <div class="sidebar-section">
                 <div class="sidebar-label">Navigate</div>
                 <button class="tab-button active" onclick="App.switchTab('dashboard')">🏠 Dashboard</button>
+                <button class="tab-button" onclick="App.switchTab('templates')">✨ Templates</button>
                 <button class="tab-button" onclick="App.switchTab('characters')">👥 Characters</button>
                 <button class="tab-button" onclick="App.switchTab('timeline')">🗓️ Timeline</button>
                 <button class="tab-button" onclick="App.switchTab('plot')">📖 Plot</button>
@@ -50,6 +70,7 @@
 
         <nav class="mobile-tabbar" aria-label="Tabs">
             <button class="tab-button active" onclick="App.switchTab('dashboard')"><span class="mobile-tab-icon">🏠</span><span class="mobile-tab-label">Home</span></button>
+            <button class="tab-button" onclick="App.switchTab('templates')"><span class="mobile-tab-icon">✨</span><span class="mobile-tab-label">Templates</span></button>
             <button class="tab-button" onclick="App.switchTab('characters')"><span class="mobile-tab-icon">👥</span><span class="mobile-tab-label">Characters</span></button>
             <button class="tab-button" onclick="App.switchTab('timeline')"><span class="mobile-tab-icon">🗓️</span><span class="mobile-tab-label">Timeline</span></button>
             <button class="tab-button" onclick="App.switchTab('workitems')"><span class="mobile-tab-icon">✅</span><span class="mobile-tab-label">Tasks</span></button>
@@ -62,7 +83,14 @@
 
         <!-- DASHBOARD TAB -->
         <div id="dashboard" class="tab-content active">
-            <div id="aiStatusIndicator"></div>
+            <div style="display:flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                <div id="aiStatusIndicator" style="flex:1; min-width: 280px;"></div>
+                <div style="display:flex; gap:0.5rem; flex-wrap: wrap; justify-content: flex-end;">
+                    <button class="topbar-ghost" onclick="App.exportStory()">Export Story</button>
+                    <button class="topbar-ghost" onclick="App.openImportStoryPicker()">Import Story</button>
+                    <input id="importStoryFileInput" type="file" accept="application/json,.json" style="display:none;" onchange="App.importStoryFromFile(this.files?.[0] || null)">
+                </div>
+            </div>
             <div class="dashboard-grid">
                 <div class="stat-card" style="border-top: 4px solid #3b82f6;">
                     <div class="stat-number" id="character-count">0</div>
@@ -104,11 +132,33 @@
             <div class="card">
                 <h2>Quick Actions</h2>
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem;">
+                    <button class="ai-btn" onclick="App.openImportNotesModal()" style="background: linear-gradient(90deg, #f97316, #ec4899); border-color: rgba(249, 115, 22, 0.25);">📝 Import Notes</button>
+                    <button class="ai-btn" onclick="App.switchTab('templates')" style="background: linear-gradient(90deg, #8b5cf6, #06b6d4); border-color: rgba(139, 92, 246, 0.25);">✨ Templates</button>
                     <button onclick="App.switchTab('characters')">➕ Add Character</button>
                     <button class="ai-btn" onclick="App.switchTab('timeline')">🗓️ Add Timeline Event</button>
                     <button onclick="App.switchTab('workitems')" style="background: linear-gradient(90deg, #16a34a, #06b6d4); border-color: rgba(22, 163, 74, 0.25);">✅ Add Work Item</button>
                     <button class="topbar-ghost" onclick="App.switchTab('ai-settings')">⚙️ Configure AI</button>
                 </div>
+            </div>
+            <div class="card">
+                <div class="ai-header">
+                    <h2 style="margin: 0;">🧠 Auto-Structure Raw Notes</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Paste raw notes here to auto-structure into Characters, Timeline, and Relationships. You’ll review suggestions before importing.</p>
+                <label class="block text-sm font-medium mb-2">Paste raw notes here to auto-structure</label>
+                <textarea id="dashboardRawNotes" class="form-input" rows="8" placeholder="Paste your full story notes here..."></textarea>
+                <div style="display:flex; gap:0.6rem; flex-wrap: wrap; margin-top: 0.75rem;">
+                    <button class="ai-btn" onclick="App.analyzeAndImportDashboardNotes()" style="background: linear-gradient(90deg, #8b5cf6, #06b6d4); border-color: rgba(139, 92, 246, 0.25);">✨ Analyze & Import</button>
+                    <button class="topbar-ghost" onclick="document.getElementById('dashboardRawNotes').value=''">Clear</button>
+                </div>
+                <div id="dashboardImportStatus" style="margin-top:0.75rem;"></div>
+            </div>
+            <div class="card">
+                <div class="ai-header">
+                    <h2 style="margin: 0;">🧾 Review Drafts</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Non‑canon items are drafts. Promote intentionally, merge into canon, or delete safely.</p>
+                <div id="draftsReviewContainer"></div>
             </div>
             <div class="card">
                 <div class="ai-header">
@@ -122,6 +172,7 @@
                     <button class="ai-btn" onclick="App.analyzePlot()">📖 Plot Structure</button>
                 </div>
                 <div id="aiRunStatus"></div>
+                <div id="aiSuggestedActions"></div>
                 <div id="aiActionQueue"></div>
                 <div style="display: flex; justify-content: space-between; align-items: center; margin: 1rem 0;">
                     <h3 style="margin: 0;">Saved Reports</h3>
@@ -172,8 +223,22 @@
                 <button onclick="App.addCharacter()" class="mt-4">+ Add Character</button>
             </div>
             <div>
-                <input type="text" id="characterSearch" class="search-box" placeholder="Search characters...">
+                <div style="display:flex; gap:0.6rem; flex-wrap: wrap; align-items:center; justify-content: space-between; margin-bottom: 0.75rem;">
+                    <input type="text" id="characterSearch" class="search-box" style="margin:0; flex: 1; min-width: 240px;" placeholder="Search characters...">
+                    <button class="topbar-ghost" onclick="App.toggleCanonOnly('characters')">Show Canon Only / Show All</button>
+                </div>
                 <div id="charactersContainer"></div>
+            </div>
+        </div>
+
+        <!-- TEMPLATES TAB -->
+        <div id="templates" class="tab-content">
+            <div class="card">
+                <div class="ai-header">
+                    <h2 style="margin: 0;">✨ Templates</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Start quickly with C‑drama trope starters. Applying a template replaces your current story data (with a confirmation prompt).</p>
+                <div id="templatesContainer"></div>
             </div>
         </div>
 
@@ -223,14 +288,31 @@
                     <h2 style="margin: 0;">🧭 Hero’s Journey (Alternative Structure)</h2>
                 </div>
                 <p class="text-gray-600 mb-4">Use this structure if you prefer it over Dan Harmon’s circle.</p>
-                <img
-                    src="assets/heros_journey-768x759-63800efc-abdb-44c7-8117-226cccd6fdaf.png"
-                    alt="Hero's Journey story structure"
-                    class="story-structure-image"
-                />
+                <div class="card" style="margin:0; padding: 1rem;">
+                    <div class="text-sm text-gray-600" style="margin-bottom: 0.75rem;">
+                        Classic 12-step map (Campbell/Vogler). Use this as a checklist to sanity-check your beats.
+                    </div>
+                    <ol style="margin: 0; padding-left: 1.25rem; display: grid; gap: 0.35rem;">
+                        <li><strong>Ordinary World</strong> — establish baseline, relationships, and longing.</li>
+                        <li><strong>Call to Adventure</strong> — disruption arrives; a problem can’t be ignored.</li>
+                        <li><strong>Refusal of the Call</strong> — fear, duty, or denial delays the leap.</li>
+                        <li><strong>Meeting the Mentor</strong> — guidance, tool, ally, or new worldview appears.</li>
+                        <li><strong>Crossing the Threshold</strong> — irreversible commitment into a new world.</li>
+                        <li><strong>Tests, Allies, Enemies</strong> — learn rules; form bonds; identify threats.</li>
+                        <li><strong>Approach to the Inmost Cave</strong> — plan, doubt, and tightening stakes.</li>
+                        <li><strong>Ordeal</strong> — the central crisis; symbolic “death” and rebirth.</li>
+                        <li><strong>Reward</strong> — insight, prize, or relationship shift after surviving.</li>
+                        <li><strong>The Road Back</strong> — consequences; pursuit; no easy return.</li>
+                        <li><strong>Resurrection</strong> — final test; the hero proves transformation.</li>
+                        <li><strong>Return with the Elixir</strong> — bring back change that heals the world.</li>
+                    </ol>
+                </div>
             </div>
             <div class="card">
-                <h2>Timeline Events</h2>
+                <div class="ai-header">
+                    <h2 style="margin:0;">Timeline Events</h2>
+                    <button class="topbar-ghost" onclick="App.toggleCanonOnly('timeline')">Show Canon Only / Show All</button>
+                </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                     <div>
                         <label class="block text-sm font-medium mb-2">Event Title</label>
@@ -277,7 +359,10 @@
         <!-- WORK ITEMS TAB -->
         <div id="workitems" class="tab-content">
             <div class="card">
-                <h2>Add Work Item</h2>
+                <div class="ai-header">
+                    <h2 style="margin:0;">Add Work Item</h2>
+                    <button class="topbar-ghost" onclick="App.toggleCanonOnly('workitems')">Show Canon Only / Show All</button>
+                </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                     <input type="text" id="newWorkTitle" class="form-input" placeholder="Task title...">
                     <select id="newWorkCategory" class="form-input">

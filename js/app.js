@@ -8,6 +8,56 @@ const App = {
     currentEditingEventId: null,
     currentEditingCharacterId: null,
     MASTER_DOC_VERSION: 1,
+    timelineSortable: null,
+    draggingCharacterId: null,
+    relationshipDraft: { fromId: null, toId: null, type: 'other', notes: '' },
+    inlineEdit: {
+        kind: null, // 'character' | 'event'
+        id: null,
+        field: null, // 'name' | 'title' | 'beat'
+        value: ''
+    },
+    commandPalette: {
+        open: false,
+        query: '',
+        activeIndex: 0
+    },
+    suggestedActionsUI: {
+        selected: {} // idx -> boolean
+    },
+    globalSearch: {
+        query: '',
+        characterTypes: new Set(),
+        beats: new Set()
+    },
+    canonUI: {
+        targetType: null, // 'character' | 'timeline' | 'workItem'
+        targetId: null,
+        showCanonOnlyCharacters: false,
+        showCanonOnlyTimeline: false,
+        showCanonOnlyWorkItems: false
+    },
+    importNotesState: {
+        activeTab: 'paste',
+        rawText: '',
+        loading: false,
+        extracted: null,
+        conflicts: {
+            characters: [],
+            timelineEvents: [],
+            workItems: []
+        },
+        conflictResolutions: {
+            // key -> 'keep' | 'draft' | 'replace'
+        },
+        selections: {
+            characters: {},
+            timelineEvents: {},
+            relationships: {},
+            politics: {},
+            workItems: {}
+        }
+    },
 
     /**
      * Initialize the application
@@ -64,11 +114,361 @@ const App = {
         this.setThemePreference(next);
     },
 
+    // ============ COMMAND PALETTE ============
+
+    getCommands() {
+        return [
+            { id: 'add-character', label: 'Add Character', run: () => { this.switchTab('characters'); setTimeout(() => document.getElementById('newCharName')?.focus(), 0); } },
+            { id: 'add-timeline', label: 'Add Timeline Event', run: () => { this.switchTab('timeline'); setTimeout(() => document.getElementById('newEventTitle')?.focus(), 0); } },
+            { id: 'analyze-story', label: 'Analyze Story', run: () => { this.switchTab('dashboard'); this.analyzeStory(); } },
+            { id: 'gen-master', label: 'Generate Master Document', run: () => { this.switchTab('master-document'); this.regenerateMasterDocument(); } },
+            { id: 'import-notes', label: 'Import Notes', run: () => { this.switchTab('dashboard'); this.openImportNotesModal(); } }
+        ];
+    },
+
+    openCommandPalette() {
+        document.getElementById('commandPaletteModal')?.classList.add('active');
+        this.commandPalette.open = true;
+        this.commandPalette.query = '';
+        this.commandPalette.activeIndex = 0;
+        const input = document.getElementById('commandPaletteInput');
+        if (input) {
+            input.value = '';
+            setTimeout(() => input.focus(), 0);
+        }
+        this.renderCommandPaletteList();
+    },
+
+    closeCommandPalette() {
+        document.getElementById('commandPaletteModal')?.classList.remove('active');
+        this.commandPalette.open = false;
+    },
+
+    onCommandPaletteQuery(q) {
+        this.commandPalette.query = String(q || '');
+        this.commandPalette.activeIndex = 0;
+        this.renderCommandPaletteList();
+    },
+
+    onCommandPaletteKeydown(e) {
+        const list = this.getFilteredCommands();
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            this.commandPalette.activeIndex = Math.min(this.commandPalette.activeIndex + 1, Math.max(0, list.length - 1));
+            this.renderCommandPaletteList();
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            this.commandPalette.activeIndex = Math.max(this.commandPalette.activeIndex - 1, 0);
+            this.renderCommandPaletteList();
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            const cmd = list[this.commandPalette.activeIndex] || list[0];
+            if (cmd) {
+                this.closeCommandPalette();
+                cmd.run();
+            }
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            this.closeCommandPalette();
+        }
+    },
+
+    getFilteredCommands() {
+        const q = this.commandPalette.query.trim().toLowerCase();
+        const cmds = this.getCommands();
+        if (!q) return cmds;
+        return cmds.filter(c => c.label.toLowerCase().includes(q));
+    },
+
+    renderCommandPaletteList() {
+        const container = document.getElementById('commandPaletteList');
+        if (!container) return;
+
+        const list = this.getFilteredCommands();
+        if (list.length === 0) {
+            container.innerHTML = '<div class="ai-result">No matches.</div>';
+            return;
+        }
+
+        container.innerHTML = `
+            <div class="preview-card" style="margin:0;">
+                <ul class="preview-list" style="margin:0;">
+                    ${list.map((cmd, idx) => `
+                        <li class="preview-item" style="cursor:pointer; ${idx === this.commandPalette.activeIndex ? 'background: rgba(37, 99, 235, 0.10); border-radius: 0.75rem; padding-left: 0.45rem; padding-right: 0.45rem;' : ''}"
+                            onclick="App.closeCommandPalette(); App.runCommandById('${cmd.id}')"
+                        >
+                            <div style="flex:1;">
+                                <div class="preview-item-title">${this.escapeHTML(cmd.label)}</div>
+                            </div>
+                            <div class="preview-item-sub">${idx === this.commandPalette.activeIndex ? 'Enter' : ''}</div>
+                        </li>
+                    `).join('')}
+                </ul>
+            </div>
+        `;
+    },
+
+    runCommandById(id) {
+        const cmd = this.getCommands().find(c => c.id === id);
+        if (cmd) cmd.run();
+    },
+
     /**
      * Setup event listeners
      */
     setupEventListeners() {
         document.getElementById('characterSearch')?.addEventListener('input', () => this.renderCharacters());
+        document.addEventListener('keydown', (e) => this.handleGlobalKeydown(e));
+    },
+
+    // ============ GLOBAL SEARCH + CHIPS ============
+
+    onGlobalSearchQuery(value) {
+        this.globalSearch.query = String(value || '');
+        this.render();
+    },
+
+    toggleGlobalChip(kind, value) {
+        if (kind === 'characterType') {
+            const set = this.globalSearch.characterTypes;
+            if (set.has(value)) set.delete(value); else set.add(value);
+            this.updateGlobalChipUI();
+            this.renderCharacters();
+            return;
+        }
+        if (kind === 'beat') {
+            const set = this.globalSearch.beats;
+            if (set.has(value)) set.delete(value); else set.add(value);
+            this.updateGlobalChipUI();
+            this.renderTimelineWithCircle();
+        }
+    },
+
+    updateGlobalChipUI() {
+        const active = (btnId, isActive) => {
+            const el = document.getElementById(btnId);
+            if (!el) return;
+            el.classList.toggle('active', isActive);
+        };
+        active('chipTypeFriendly', this.globalSearch.characterTypes.has('friendly'));
+        active('chipTypeAntagonist', this.globalSearch.characterTypes.has('antagonist'));
+        active('chipTypeGray', this.globalSearch.characterTypes.has('gray'));
+        for (let i = 1; i <= 8; i += 1) {
+            active(`chipBeat${i}`, this.globalSearch.beats.has(String(i)));
+        }
+    },
+
+    // ============ CANON UI ============
+
+    openCanonConfirmModal(type, id) {
+        this.canonUI.targetType = type;
+        this.canonUI.targetId = id;
+        const isCanon = StorageService.isCanonProtected(id, type);
+        const title = document.getElementById('canonModalTitle');
+        const body = document.getElementById('canonModalBody');
+        const actionBtn = document.getElementById('canonModalActionBtn');
+        if (title) title.textContent = isCanon ? 'Remove Canon status?' : 'Mark as Canon?';
+        if (body) {
+            body.textContent = isCanon
+                ? 'This item is currently protected as Canon. Removing Canon will allow edits/deletion and AI imports could modify it.'
+                : 'Marking as Canon protects this item from deletion and prevents AI imports from overwriting it.';
+        }
+        if (actionBtn) {
+            actionBtn.textContent = isCanon ? 'Remove Canon' : 'Mark as Canon';
+            actionBtn.style.background = isCanon ? '#ef4444' : '#d97706';
+        }
+        document.getElementById('canonConfirmModal')?.classList.add('active');
+    },
+
+    closeCanonConfirmModal() {
+        document.getElementById('canonConfirmModal')?.classList.remove('active');
+        this.canonUI.targetType = null;
+        this.canonUI.targetId = null;
+    },
+
+    confirmToggleCanon() {
+        const { targetType, targetId } = this.canonUI;
+        if (!targetType || targetId == null) return;
+
+        const numId = Number(targetId);
+        const applyLocalToggle = (arrKey) => {
+            const arr = this.storyData[arrKey];
+            if (!Array.isArray(arr)) return;
+            const item = arr.find(x => x && x.id === numId);
+            if (item) item.isCanon = !Boolean(item.isCanon);
+        };
+
+        if (targetType === 'character') applyLocalToggle('characters');
+        if (targetType === 'timeline') applyLocalToggle('events');
+        if (targetType === 'workItem') applyLocalToggle('workItems');
+
+        StorageService.saveStoryData(this.storyData);
+        this.render();
+        this.closeCanonConfirmModal();
+    },
+
+    toggleCanonOnly(tab) {
+        if (tab === 'characters') this.canonUI.showCanonOnlyCharacters = !this.canonUI.showCanonOnlyCharacters;
+        if (tab === 'timeline') this.canonUI.showCanonOnlyTimeline = !this.canonUI.showCanonOnlyTimeline;
+        if (tab === 'workitems') this.canonUI.showCanonOnlyWorkItems = !this.canonUI.showCanonOnlyWorkItems;
+        this.render();
+    },
+
+    renderCanonBadge(type, id) {
+        return `<span class="canon-badge" title="Protected – AI imports will not overwrite" onclick="App.openCanonConfirmModal('${type}', ${id}); event.stopPropagation();">🛡️ CANON</span>`;
+    },
+
+    matchesGlobalQuery(text) {
+        const q = this.globalSearch.query.trim().toLowerCase();
+        if (!q) return true;
+        return String(text || '').toLowerCase().includes(q);
+    },
+
+    handleGlobalKeydown(e) {
+        const isMac = navigator.platform?.toLowerCase?.().includes('mac');
+        const mod = isMac ? e.metaKey : e.ctrlKey;
+        if (!mod) return;
+
+        const key = String(e.key || '').toLowerCase();
+        if (key === 'k') {
+            e.preventDefault();
+            this.openCommandPalette();
+            return;
+        }
+
+        if (key === 's') {
+            e.preventDefault();
+            this.forceSave();
+            return;
+        }
+
+        if (key === 'a' && e.shiftKey) {
+            e.preventDefault();
+            this.runAIAnalysisShortcut();
+        }
+    },
+
+    forceSave() {
+        StorageService.saveStoryData(this.storyData);
+        const status = document.getElementById('aiRunStatus');
+        if (status) {
+            status.innerHTML = '<div class="ai-status connected">✅ Saved.</div>';
+        }
+    },
+
+    runAIAnalysisShortcut() {
+        this.switchTab('dashboard');
+        this.analyzeStory();
+    },
+
+    // ============ EXPORT / IMPORT STORY ============
+
+    exportStory() {
+        StorageService.exportStoryData(this.storyData);
+    },
+
+    openImportStoryPicker() {
+        const input = document.getElementById('importStoryFileInput');
+        if (!input) return;
+        input.value = '';
+        input.click();
+    },
+
+    importStoryFromFile(file) {
+        if (!file) return;
+        const ok = confirm('Import this story JSON and replace your current story in this browser? This cannot be undone.');
+        if (!ok) return;
+
+        StorageService.importStoryData(file, (data) => {
+            if (!data || typeof data !== 'object') {
+                alert('Invalid story JSON.');
+                return;
+            }
+            // Persist then reload through migrations/defaulting.
+            StorageService.saveStoryData(data);
+            this.storyData = StorageService.loadStoryData();
+            this.render();
+            alert('Story imported.');
+        });
+    },
+
+    // ============ INLINE EDITING ============
+
+    startInlineEdit(kind, id, field, initialValue) {
+        this.inlineEdit = { kind, id, field, value: String(initialValue ?? '') };
+        this.render();
+        setTimeout(() => {
+            const el = document.querySelector('.inline-edit-input');
+            if (el && el.focus) {
+                el.focus();
+                if (el.select) el.select();
+            }
+        }, 0);
+    },
+
+    cancelInlineEdit() {
+        this.inlineEdit = { kind: null, id: null, field: null, value: '' };
+        this.render();
+    },
+
+    commitInlineEdit() {
+        const { kind, id, field, value } = this.inlineEdit;
+        const clean = String(value ?? '').trim();
+        if (!kind || !field || id == null) {
+            this.cancelInlineEdit();
+            return;
+        }
+
+        if (kind === 'character' && field === 'name') {
+            if (!clean) {
+                alert('Name cannot be empty.');
+                return;
+            }
+            const character = this.storyData.characters.find(c => c.id === id);
+            if (character) {
+                character.name = clean;
+                this.save();
+            }
+        }
+
+        if (kind === 'event' && field === 'title') {
+            if (!clean) {
+                alert('Event title cannot be empty.');
+                return;
+            }
+            const ev = this.storyData.events.find(ev2 => ev2.id === id);
+            if (ev) {
+                ev.title = clean;
+                StorageService.saveStoryData(this.storyData);
+                this.renderTimelineWithCircle();
+            }
+        }
+
+        if (kind === 'event' && field === 'beat') {
+            const ev = this.storyData.events.find(ev2 => ev2.id === id);
+            if (ev) {
+                ev.beat = clean || null;
+                StorageService.saveStoryData(this.storyData);
+                this.renderTimelineWithCircle();
+            }
+        }
+
+        this.inlineEdit = { kind: null, id: null, field: null, value: '' };
+        this.render();
+    },
+
+    onInlineEditInput(value) {
+        this.inlineEdit.value = String(value ?? '');
+    },
+
+    onInlineEditKeydown(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            this.commitInlineEdit();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            this.cancelInlineEdit();
+        }
     },
 
     /**
@@ -103,6 +503,9 @@ const App = {
             this.renderStoryboard();
             this.renderVisualGallery();
         }
+        if (tabName === 'templates') {
+            this.renderTemplates();
+        }
 
         // Keep navigation feeling snappy by scrolling main content to top.
         try {
@@ -117,15 +520,1150 @@ const App = {
      */
     render() {
         this.renderCharacters();
+        this.renderTemplates();
         this.renderPlot();
         this.renderPolitics();
         this.renderWorkItems();
         this.updateDashboard();
+        this.renderReviewDrafts();
+        this.renderCanonStatusIndicator();
         this.renderAIActionItems();
         this.renderAIReports();
+        this.renderAISuggestedActions();
         this.renderStoryboard();
         this.renderVisualGallery();
         this.renderMasterDocument();
+        this.updateGlobalChipUI();
+    },
+
+    renderCanonStatusIndicator() {
+        const el = document.getElementById('canonStatusIndicator');
+        if (!el) return;
+        const canon = StorageService.getAllCanonItems();
+        const canonCount =
+            (canon.characters?.length || 0)
+            + (canon.timelineEvents?.length || 0)
+            + (canon.workItems?.length || 0);
+        const draftsCount = this.getAllDraftItems().length;
+        el.textContent = `${canonCount} Canon items protected • ${draftsCount} Drafts pending review`;
+    },
+
+    goToDraftsReview() {
+        this.switchTab('dashboard');
+        setTimeout(() => {
+            document.getElementById('draftsReviewContainer')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 0);
+    },
+
+    // ============ REVIEW DRAFTS ============
+
+    getAllDraftItems() {
+        const drafts = [];
+        (Array.isArray(this.storyData.characters) ? this.storyData.characters : []).forEach(c => {
+            if (c && !c.isCanon) drafts.push({ type: 'character', id: c.id, title: c.name, subtitle: `${c.type || 'type?'} • ${c.role || 'Role TBD'}` });
+        });
+        (Array.isArray(this.storyData.events) ? this.storyData.events : []).forEach(e => {
+            if (e && !e.isCanon) drafts.push({ type: 'timeline', id: e.id, title: e.title, subtitle: `${e.period || 'Period TBD'}${e.beat ? ` • Beat ${e.beat}` : ''}` });
+        });
+        (Array.isArray(this.storyData.workItems) ? this.storyData.workItems : []).forEach(w => {
+            if (w && !w.isCanon) drafts.push({ type: 'workItem', id: w.id, title: w.title, subtitle: `${w.category || 'Scene Planning'}${w.completed ? ' • completed' : ''}` });
+        });
+        return drafts;
+    },
+
+    renderReviewDrafts() {
+        const container = document.getElementById('draftsReviewContainer');
+        if (!container) return;
+
+        const drafts = this.getAllDraftItems();
+        if (drafts.length === 0) {
+            container.innerHTML = '<div class="ai-result suggestion">No drafts right now. Everything is Canon or you haven’t added new items yet.</div>';
+            return;
+        }
+
+        const badge = (type) => {
+            if (type === 'character') return '👥 Character';
+            if (type === 'timeline') return '🗓️ Timeline';
+            return '✅ Work Item';
+        };
+
+        container.innerHTML = `
+            <div class="preview-card" style="margin:0;">
+                <div class="text-sm text-gray-600" style="margin-bottom:0.5rem;">Draft items (${drafts.length})</div>
+                <ul class="preview-list" style="margin:0;">
+                    ${drafts.slice(0, 80).map(d => `
+                        <li class="preview-item">
+                            <div style="min-width: 140px;" class="preview-item-sub">${badge(d.type)}</div>
+                            <div style="flex:1;">
+                                <div class="preview-item-title">${this.escapeHTML(d.title || '')}</div>
+                                <div class="preview-item-sub">${this.escapeHTML(d.subtitle || '')}</div>
+                            </div>
+                            <div style="display:flex; gap:0.4rem; flex-wrap: wrap;">
+                                <button style="background:#d97706; font-size:0.8rem; padding:0.45rem 0.7rem;" onclick="App.promoteDraft('${d.type}', ${d.id})">Promote to Canon</button>
+                                <button style="background:#2563eb; font-size:0.8rem; padding:0.45rem 0.7rem;" onclick="App.openMergeDraftModal('${d.type}', ${d.id})">Merge into Canon</button>
+                                <button class="delete-btn" style="font-size:0.8rem; padding:0.45rem 0.7rem;" onclick="App.deleteDraft('${d.type}', ${d.id})">Delete Draft</button>
+                            </div>
+                        </li>
+                    `).join('')}
+                </ul>
+            </div>
+        `;
+    },
+
+    promoteDraft(type, id) {
+        const numId = Number(id);
+        if (!Number.isFinite(numId)) return;
+        if (type === 'character') {
+            const c = this.storyData.characters.find(x => x.id === numId);
+            if (c) c.isCanon = true;
+        } else if (type === 'timeline') {
+            const e = this.storyData.events.find(x => x.id === numId);
+            if (e) e.isCanon = true;
+        } else if (type === 'workItem') {
+            const w = this.storyData.workItems.find(x => x.id === numId);
+            if (w) w.isCanon = true;
+        }
+        StorageService.saveStoryData(this.storyData);
+        this.render();
+    },
+
+    deleteDraft(type, id) {
+        const numId = Number(id);
+        if (!Number.isFinite(numId)) return;
+        const ok = confirm('Delete this draft item?');
+        if (!ok) return;
+
+        if (type === 'character') {
+            this.storyData.characters = this.storyData.characters.filter(x => x.id !== numId);
+        } else if (type === 'timeline') {
+            this.storyData.events = this.storyData.events.filter(x => x.id !== numId);
+            this.storyData.events.forEach((e, idx) => { e.order = idx; });
+        } else if (type === 'workItem') {
+            this.storyData.workItems = this.storyData.workItems.filter(x => x.id !== numId);
+        }
+        StorageService.saveStoryData(this.storyData);
+        this.render();
+    },
+
+    openMergeDraftModal(type, id) {
+        const modal = document.getElementById('draftMergeModal');
+        if (!modal) return;
+
+        this.canonUI.targetType = type;
+        this.canonUI.targetId = id;
+
+        const canonSelect = document.getElementById('draftMergeTargetSelect');
+        const title = document.getElementById('draftMergeTitle');
+        const body = document.getElementById('draftMergeBody');
+        if (!canonSelect || !title || !body) return;
+
+        let draftItem = null;
+        let canonItems = [];
+        if (type === 'character') {
+            draftItem = this.storyData.characters.find(c => c.id === id);
+            canonItems = this.storyData.characters.filter(c => c.isCanon);
+        } else if (type === 'timeline') {
+            draftItem = this.storyData.events.find(e => e.id === id);
+            canonItems = this.storyData.events.filter(e => e.isCanon);
+        } else {
+            draftItem = this.storyData.workItems.find(w => w.id === id);
+            canonItems = this.storyData.workItems.filter(w => w.isCanon);
+        }
+
+        if (!draftItem) return;
+        if (canonItems.length === 0) {
+            alert('No canon items exist to merge into. Promote something to canon first.');
+            return;
+        }
+
+        title.textContent = `Merge Draft → Canon (${type})`;
+        body.textContent = 'This will append draft details into the selected canon item without overwriting canon fields, then delete the draft.';
+
+        canonSelect.innerHTML = canonItems.map(item => {
+            const label = type === 'timeline' ? item.title : item.name || item.title;
+            return `<option value="${item.id}">${this.escapeHTML(label)}</option>`;
+        }).join('');
+
+        modal.classList.add('active');
+    },
+
+    closeMergeDraftModal() {
+        document.getElementById('draftMergeModal')?.classList.remove('active');
+        this.canonUI.targetType = null;
+        this.canonUI.targetId = null;
+    },
+
+    confirmMergeDraft() {
+        const type = this.canonUI.targetType;
+        const draftId = Number(this.canonUI.targetId);
+        const targetId = Number(document.getElementById('draftMergeTargetSelect')?.value);
+        if (!type || !Number.isFinite(draftId) || !Number.isFinite(targetId)) return;
+
+        const union = (a, b) => Array.from(new Set([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])]));
+        const append = (base, extra, label = 'Merged draft') => {
+            const b = String(base || '').trim();
+            const e = String(extra || '').trim();
+            if (!e) return b;
+            const line = `${label}: ${e}`;
+            if (!b) return line;
+            if (b.toLowerCase().includes(line.toLowerCase())) return b;
+            return `${b}\n${line}`;
+        };
+
+        if (type === 'character') {
+            const draft = this.storyData.characters.find(c => c.id === draftId && !c.isCanon);
+            const canon = this.storyData.characters.find(c => c.id === targetId && c.isCanon);
+            if (!draft || !canon) return;
+            canon.notes = append(canon.notes, `${draft.background || ''}\n${draft.personality || ''}\n${draft.notes || ''}`.trim(), 'Draft');
+            canon.relatedCharacters = union(canon.relatedCharacters, draft.relatedCharacters);
+            canon.tags = union(canon.tags, union(draft.tags, ['imported']));
+            this.storyData.characters = this.storyData.characters.filter(c => c.id !== draftId);
+        } else if (type === 'timeline') {
+            const draft = this.storyData.events.find(e => e.id === draftId && !e.isCanon);
+            const canon = this.storyData.events.find(e => e.id === targetId && e.isCanon);
+            if (!draft || !canon) return;
+            canon.fullDescription = append(canon.fullDescription, `${draft.description || ''}\n${draft.fullDescription || ''}`.trim(), 'Draft');
+            canon.involvedCharacterIds = union(canon.involvedCharacterIds, draft.involvedCharacterIds);
+            canon.tags = union(canon.tags, union(draft.tags, ['imported']));
+            this.storyData.events = this.storyData.events.filter(e => e.id !== draftId);
+            this.storyData.events.forEach((e, idx) => { e.order = idx; });
+        } else {
+            const draft = this.storyData.workItems.find(w => w.id === draftId && !w.isCanon);
+            const canon = this.storyData.workItems.find(w => w.id === targetId && w.isCanon);
+            if (!draft || !canon) return;
+            canon.title = canon.title || draft.title;
+            canon.category = canon.category || draft.category;
+            canon.tags = union(canon.tags, union(draft.tags, ['imported']));
+            this.storyData.workItems = this.storyData.workItems.filter(w => w.id !== draftId);
+        }
+
+        StorageService.saveStoryData(this.storyData);
+        this.closeMergeDraftModal();
+        this.render();
+    },
+
+    // ============ TEMPLATES ============
+
+    getTemplates() {
+        return [
+            {
+                id: 'classic-palace-intrigue',
+                title: 'Classic Palace Intrigue',
+                subtitle: 'Schemes, factions, hidden heirs, and shifting loyalties.',
+                data: this.buildTemplateClassicPalaceIntrigue()
+            },
+            {
+                id: 'time-travel-romance',
+                title: 'Time-Travel Romance',
+                subtitle: 'Modern mind meets ancient court—love vs. fate.',
+                data: this.buildTemplateTimeTravelRomance()
+            },
+            {
+                id: 'revenge-redemption',
+                title: 'Revenge Redemption Arc',
+                subtitle: 'Betrayal → vengeance → truth → transformation.',
+                data: this.buildTemplateRevengeRedemption()
+            }
+        ];
+    },
+
+    renderTemplates() {
+        const container = document.getElementById('templatesContainer');
+        if (!container) return;
+
+        const templates = this.getTemplates();
+        container.innerHTML = `
+            <div class="preview-grid" style="margin-top:0;">
+                ${templates.map(t => `
+                    <div class="preview-card">
+                        <h4>${this.escapeHTML(t.title)}</h4>
+                        <div class="preview-item-sub">${this.escapeHTML(t.subtitle)}</div>
+                        <div style="display:flex; gap:0.5rem; flex-wrap: wrap; margin-top: 0.75rem;">
+                            <button class="ai-btn" onclick="App.previewTemplate('${t.id}')">Preview</button>
+                            <button style="background:#16a34a;" onclick="App.applyTemplate('${t.id}')">Apply Template</button>
+                        </div>
+                        <div class="text-sm text-gray-600" style="margin-top:0.6rem;">
+                            Includes: ${t.data.characters.length} characters • ${t.data.events.length} timeline beats • ${t.data.relationships.length} relationships
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    },
+
+    previewTemplate(templateId) {
+        const t = this.getTemplates().find(x => x.id === templateId);
+        if (!t) return;
+        const chars = t.data.characters.slice(0, 6).map(c => `- ${c.name} (${c.type}) — ${c.role}`).join('\n');
+        const evs = t.data.events.slice(0, 8).map(e => `- Beat ${e.beat}: ${e.title}`).join('\n');
+        alert(`${t.title}\n\nCharacters:\n${chars}\n\nStory Circle Beats:\n${evs}\n\nApply to load full template.`);
+    },
+
+    applyTemplate(templateId) {
+        const t = this.getTemplates().find(x => x.id === templateId);
+        if (!t) return;
+        const ok = confirm(`Apply template "${t.title}"?\n\nThis will REPLACE your current story data in this browser.`);
+        if (!ok) return;
+
+        const data = t.data;
+        this.storyData.characters = data.characters;
+        this.storyData.events = data.events;
+        this.storyData.plot = data.plot;
+        this.storyData.politics = data.politics;
+        this.storyData.workItems = data.workItems;
+        // Keep AI history / visuals / master doc / storyboard as-is but regenerate master doc to reflect new data.
+        this.refreshMasterDocument({ reason: 'template' });
+        StorageService.saveStoryData(this.storyData);
+        this.render();
+        this.switchTab('dashboard');
+    },
+
+    buildTemplateClassicPalaceIntrigue() {
+        const characters = [
+            { id: 1, name: 'Lady Shen', age: 21, role: 'Noble Consort', type: 'gray', background: 'A clever consort navigating lethal etiquette.', personality: 'Calm, strategic, observant.', relatedCharacters: [2, 3], notes: '', isCanon: true, tags: ['palace', 'intrigue'] },
+            { id: 2, name: 'Crown Prince Li', age: 24, role: 'Heir Apparent', type: 'friendly', background: 'Heir with reformist ideals and many enemies.', personality: 'Idealistic, principled, guarded.', relatedCharacters: [1, 4], notes: '', isCanon: true, tags: ['heir', 'reform'] },
+            { id: 3, name: 'Grand Chancellor Xu', age: 58, role: 'Court Powerbroker', type: 'antagonist', background: 'Controls appointments and blackmails rivals.', personality: 'Manipulative, patient, ruthless.', relatedCharacters: [1, 5], notes: '', isCanon: true, tags: ['villain', 'court'] },
+            { id: 4, name: 'Commander Yan', age: 29, role: 'Imperial Guard', type: 'gray', background: 'Loyal to the throne, torn between duty and truth.', personality: 'Stoic, honorable, conflicted.', relatedCharacters: [2, 6], notes: '', isCanon: true, tags: ['guard', 'duty'] },
+            { id: 5, name: 'Empress Dowager', age: 54, role: 'Matriarch', type: 'gray', background: 'Keeps balance between factions to preserve stability.', personality: 'Severe, discerning, pragmatic.', relatedCharacters: [3], notes: '', isCanon: true, tags: ['matriarch', 'power'] },
+            { id: 6, name: 'Palace Maid Mei', age: 18, role: 'Informant', type: 'friendly', background: 'Knows the secret passages and overhears everything.', personality: 'Quick, loyal, anxious.', relatedCharacters: [4], notes: '', isCanon: true, tags: ['informant'] }
+        ];
+
+        const events = [
+            { id: 1, title: 'Court in Balance', period: 'Act 1', order: 0, beat: '1', description: 'Establish factions and the fragile peace.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['setup'] },
+            { id: 2, title: 'A Whispered Accusation', period: 'Act 1', order: 1, beat: '2', description: 'A scandal surfaces: forged edicts tied to the Prince.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['catalyst'] },
+            { id: 3, title: 'Crossing into the Trap', period: 'Act 1', order: 2, beat: '3', description: 'Lady Shen is ordered to investigate—dangerous either way.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['threshold'] },
+            { id: 4, title: 'Secret Alliances', period: 'Act 2', order: 3, beat: '4', description: 'Mei reveals tunnels; Commander Yan offers guarded help.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['tests'] },
+            { id: 5, title: 'The Hidden Ledger', period: 'Act 2', order: 4, beat: '5', description: 'A ledger proves corruption—but implicates someone close.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['reveal'] },
+            { id: 6, title: 'The Price of Truth', period: 'Act 2', order: 5, beat: '6', description: 'Chancellor strikes back; an ally is punished publicly.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['price'] },
+            { id: 7, title: 'Return to the Throne Room', period: 'Act 3', order: 6, beat: '7', description: 'A risky trial reveals the real mastermind.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['return'] },
+            { id: 8, title: 'A New Court Order', period: 'Act 3', order: 7, beat: '8', description: 'Power shifts; Lady Shen chooses what kind of court survives.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['change'] }
+        ];
+
+        const relationships = [
+            { from: 1, to: 2, type: 'ally', description: 'Mutual protection against court plots.' },
+            { from: 1, to: 3, type: 'rival', description: 'He wants to use her; she refuses to be a pawn.' },
+            { from: 2, to: 4, type: 'mentor', description: 'Guard trains prince in survival politics.' },
+            { from: 4, to: 6, type: 'ally', description: 'Mei supplies intel; Yan keeps her safe.' }
+        ];
+
+        const byId = new Map(characters.map(c => [c.id, c]));
+        relationships.forEach(r => {
+            const a = byId.get(r.from); const b = byId.get(r.to);
+            if (!a || !b) return;
+            if (!a.relatedCharacters.includes(b.id)) a.relatedCharacters.push(b.id);
+            if (!b.relatedCharacters.includes(a.id)) b.relatedCharacters.push(a.id);
+            const lineA = `Relationship (${r.type}) with ${b.name}: ${r.description}`;
+            const lineB = `Relationship (${r.type}) with ${a.name}: ${r.description}`;
+            a.notes = a.notes ? `${a.notes}\n${lineA}` : lineA;
+            b.notes = b.notes ? `${b.notes}\n${lineB}` : lineB;
+        });
+
+        return {
+            characters,
+            events,
+            relationships,
+            plot: [
+                { act: 'Act 1: The Court’s Mask', content: 'A stable court hides a rotten chain of bribery and forged orders.' },
+                { act: 'Act 2: The Knife’s Edge', content: 'Investigation reveals a ledger; retaliation costs blood and reputation.' },
+                { act: 'Act 3: The Trial', content: 'Truth is weaponized; loyalty is tested; a new balance is forged.' }
+            ],
+            politics: [
+                { section: 'Factions', content: 'Reformists (Prince) vs. Conservatives (Chancellor) vs. Stabilizers (Dowager).' },
+                { section: 'Court Levers', content: 'Appointments, punishments, military command, palace rumors, sealed edicts.' }
+            ],
+            workItems: [
+                { id: 1, title: 'Define the forged edict’s contents and why it matters', category: 'Plot Holes', completed: false, isCanon: false, tags: [] },
+                { id: 2, title: 'Outline the secret tunnel map and key locations', category: 'Worldbuilding', completed: false, isCanon: false, tags: [] },
+                { id: 3, title: 'Write the public punishment scene (Beat 6)', category: 'Dialogue', completed: false, isCanon: false, tags: [] }
+            ]
+        };
+    },
+
+    buildTemplateTimeTravelRomance() {
+        const characters = [
+            { id: 1, name: 'Dr. Lin Yue', age: 30, role: 'Modern Scientist', type: 'friendly', background: 'Accidentally time-slips into a dynasty at war.', personality: 'Rational, brave, empathetic.', relatedCharacters: [2], notes: '', isCanon: true, tags: ['time-travel'] },
+            { id: 2, name: 'Prince Zhao', age: 25, role: 'Prince (incognito)', type: 'friendly', background: 'Hides identity to expose corruption.', personality: 'Charming, wary, principled.', relatedCharacters: [1, 3], notes: '', isCanon: true, tags: ['romance', 'secret-identity'] },
+            { id: 3, name: 'Minister Han', age: 56, role: 'Corrupt Minister', type: 'antagonist', background: 'Fears prophecy about a “star‑born stranger”.', personality: 'Paranoid, cunning.', relatedCharacters: [2, 4], notes: '', isCanon: true, tags: ['villain'] },
+            { id: 4, name: 'General Qiu', age: 33, role: 'Frontline Commander', type: 'gray', background: 'Needs victory; distrusts outsiders.', personality: 'Blunt, loyal, skeptical.', relatedCharacters: [3], notes: '', isCanon: true, tags: ['war'] }
+        ];
+        const events = [
+            { id: 1, title: 'Before the Slip', period: 'Prologue', order: 0, beat: '1', description: 'Establish Lin’s life and obsession with a theory.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['setup'] },
+            { id: 2, title: 'The Anomaly', period: 'Act 1', order: 1, beat: '2', description: 'A glitch hints something is wrong with reality.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['catalyst'] },
+            { id: 3, title: 'Crossing Centuries', period: 'Act 1', order: 2, beat: '3', description: 'Accident: Lin arrives in the past and must survive.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['threshold'] },
+            { id: 4, title: 'Tests in the Marketplace', period: 'Act 2', order: 3, beat: '4', description: 'She meets the Prince incognito; allies and enemies emerge.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['tests'] },
+            { id: 5, title: 'A Cure that Changes the Court', period: 'Act 2', order: 4, beat: '5', description: 'Lin’s knowledge saves lives and draws attention.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['reveal'] },
+            { id: 6, title: 'The Price of a Miracle', period: 'Act 2', order: 5, beat: '6', description: 'Minister frames Lin; the Prince must reveal something.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['price'] },
+            { id: 7, title: 'Return with the Truth', period: 'Act 3', order: 6, beat: '7', description: 'Lin confronts the time-slip’s cause; love vs duty.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['return'] },
+            { id: 8, title: 'Changed Fate', period: 'Act 3', order: 7, beat: '8', description: 'Resolution: choose the timeline and the relationship.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['change'] }
+        ];
+        const relationships = [
+            { from: 1, to: 2, type: 'romance', description: 'Mutual respect becomes love under pressure.' },
+            { from: 2, to: 3, type: 'enemy', description: 'Minister sees the Prince’s reform as a threat.' }
+        ];
+
+        const byId = new Map(characters.map(c => [c.id, c]));
+        relationships.forEach(r => {
+            const a = byId.get(r.from); const b = byId.get(r.to);
+            if (!a || !b) return;
+            if (!a.relatedCharacters.includes(b.id)) a.relatedCharacters.push(b.id);
+            if (!b.relatedCharacters.includes(a.id)) b.relatedCharacters.push(a.id);
+            const lineA = `Relationship (${r.type}) with ${b.name}: ${r.description}`;
+            const lineB = `Relationship (${r.type}) with ${a.name}: ${r.description}`;
+            a.notes = a.notes ? `${a.notes}\n${lineA}` : lineA;
+            b.notes = b.notes ? `${b.notes}\n${lineB}` : lineB;
+        });
+
+        return {
+            characters,
+            events,
+            relationships,
+            plot: [
+                { act: 'Act 1: The Slip', content: 'A modern scientist is thrown into a past she must decode.' },
+                { act: 'Act 2: The Court’s Gravity', content: 'Her knowledge is power—and a target; romance deepens the stakes.' },
+                { act: 'Act 3: The Choice', content: 'Fix the anomaly or accept a new life and rewritten fate.' }
+            ],
+            politics: [
+                { section: 'Core Conflict', content: 'Reform vs. corruption; war pressure amplifies court stakes.' }
+            ],
+            workItems: [
+                { id: 1, title: 'Define the time-slip mechanism and its rules', category: 'Worldbuilding', completed: false, isCanon: false, tags: [] },
+                { id: 2, title: 'Write the identity reveal scene (Beat 6)', category: 'Dialogue', completed: false, isCanon: false, tags: [] }
+            ]
+        };
+    },
+
+    buildTemplateRevengeRedemption() {
+        const characters = [
+            { id: 1, name: 'Wei Ruo', age: 27, role: 'Wronged Heir', type: 'gray', background: 'Survivor of a massacre framed as treason.', personality: 'Cold, disciplined, secretly kind.', relatedCharacters: [2, 3], notes: '', isCanon: true, tags: ['revenge'] },
+            { id: 2, name: 'Princess An', age: 24, role: 'Royal Investigator', type: 'friendly', background: 'Believes the official story is false.', personality: 'Brave, curious, stubborn.', relatedCharacters: [1], notes: '', isCanon: true, tags: ['justice'] },
+            { id: 3, name: 'Duke Luo', age: 50, role: 'Architect of Betrayal', type: 'antagonist', background: 'Orchestrated the fall to seize power.', personality: 'Smooth, cruel, calculating.', relatedCharacters: [1, 4], notes: '', isCanon: true, tags: ['villain'] },
+            { id: 4, name: 'Old Teacher Gu', age: 66, role: 'Mentor', type: 'friendly', background: 'Knows the hidden history and the cost of vengeance.', personality: 'Wise, weary, blunt.', relatedCharacters: [3], notes: '', isCanon: true, tags: ['mentor'] }
+        ];
+        const events = [
+            { id: 1, title: 'Ashes of the Past', period: 'Act 1', order: 0, beat: '1', description: 'Wei lives under a new name, training in silence.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['setup'] },
+            { id: 2, title: 'A Name Reappears', period: 'Act 1', order: 1, beat: '2', description: 'A witness resurfaces; revenge becomes possible.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['catalyst'] },
+            { id: 3, title: 'Go to the Capital', period: 'Act 1', order: 2, beat: '3', description: 'Wei returns to court disguised, hunting the Duke.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['threshold'] },
+            { id: 4, title: 'Tests of Trust', period: 'Act 2', order: 3, beat: '4', description: 'Princess An suspects Wei; they circle each other.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['tests'] },
+            { id: 5, title: 'Proof and Doubt', period: 'Act 2', order: 4, beat: '5', description: 'Evidence surfaces—but it threatens innocent lives.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['reveal'] },
+            { id: 6, title: 'The Cost of Blood', period: 'Act 2', order: 5, beat: '6', description: 'Wei’s plan causes collateral damage; guilt cracks the mask.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['price'] },
+            { id: 7, title: 'Return with Mercy', period: 'Act 3', order: 6, beat: '7', description: 'Wei chooses a lawful path; the Duke panics.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['return'] },
+            { id: 8, title: 'Redemption or Ruin', period: 'Act 3', order: 7, beat: '8', description: 'Confrontation resolves: truth, sacrifice, and transformation.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['change'] }
+        ];
+        const relationships = [
+            { from: 1, to: 2, type: 'romance', description: 'Suspicion turns into partnership and love.' },
+            { from: 1, to: 3, type: 'enemy', description: 'Personal vendetta rooted in betrayal.' },
+            { from: 4, to: 1, type: 'mentor', description: 'Guides Wei away from self-destruction.' }
+        ];
+
+        const byId = new Map(characters.map(c => [c.id, c]));
+        relationships.forEach(r => {
+            const a = byId.get(r.from); const b = byId.get(r.to);
+            if (!a || !b) return;
+            if (!a.relatedCharacters.includes(b.id)) a.relatedCharacters.push(b.id);
+            if (!b.relatedCharacters.includes(a.id)) b.relatedCharacters.push(a.id);
+            const lineA = `Relationship (${r.type}) with ${b.name}: ${r.description}`;
+            const lineB = `Relationship (${r.type}) with ${a.name}: ${r.description}`;
+            a.notes = a.notes ? `${a.notes}\n${lineA}` : lineA;
+            b.notes = b.notes ? `${b.notes}\n${lineB}` : lineB;
+        });
+
+        return {
+            characters,
+            events,
+            relationships,
+            plot: [
+                { act: 'Act 1: Return of the Ghost', content: 'A wronged heir re-enters the capital to hunt the truth.' },
+                { act: 'Act 2: Revenge’s Shadow', content: 'Plans succeed—but the price reveals what Wei is becoming.' },
+                { act: 'Act 3: Redemption', content: 'Justice replaces vengeance; the final confrontation transforms everyone.' }
+            ],
+            politics: [
+                { section: 'Cover-up', content: 'A forged treason case, sealed testimonies, and bought officials.' }
+            ],
+            workItems: [
+                { id: 1, title: 'Define the massacre incident and who benefits', category: 'Worldbuilding', completed: false, isCanon: false, tags: [] },
+                { id: 2, title: 'Write the “collateral damage” turning point (Beat 6)', category: 'Scene Planning', completed: false, isCanon: false, tags: [] }
+            ]
+        };
+    },
+
+    // ============ IMPORT NOTES ============
+
+    openImportNotesModal() {
+        const modal = document.getElementById('importNotesModal');
+        if (!modal) return;
+        modal.classList.add('active');
+        this.importNotesState.activeTab = 'paste';
+        this.importNotesState.loading = false;
+        this.importNotesState.extracted = null;
+        this.importNotesState.conflicts = { characters: [], timelineEvents: [], workItems: [] };
+        this.importNotesState.conflictResolutions = {};
+        this.importNotesState.selections = {
+            characters: {},
+            timelineEvents: {},
+            relationships: {},
+            politics: {},
+            workItems: {}
+        };
+        const paste = document.getElementById('importNotesPaste');
+        if (paste) paste.value = this.importNotesState.rawText || '';
+        this.renderImportNotesUI();
+    },
+
+    closeImportNotesModal() {
+        document.getElementById('importNotesModal')?.classList.remove('active');
+    },
+
+    setImportNotesTab(tab) {
+        this.importNotesState.activeTab = tab === 'upload' ? 'upload' : 'paste';
+        this.renderImportNotesUI();
+    },
+
+    onImportNotesPasteChange(value) {
+        this.importNotesState.rawText = String(value || '');
+    },
+
+    async onImportNotesFileSelected(file) {
+        if (!file) return;
+        const name = String(file.name || '').toLowerCase();
+        if (!(name.endsWith('.txt') || name.endsWith('.md'))) {
+            alert('Please upload a .txt or .md file.');
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            this.importNotesState.rawText = String(reader.result || '');
+            const paste = document.getElementById('importNotesPaste');
+            if (paste) paste.value = this.importNotesState.rawText;
+            this.importNotesState.activeTab = 'paste';
+            this.renderImportNotesUI();
+        };
+        reader.readAsText(file);
+    },
+
+    async extractFromNotes() {
+        const status = document.getElementById('importNotesStatus');
+        const text = String(this.importNotesState.rawText || '').trim();
+        if (!text) {
+            if (status) status.innerHTML = '<div class="ai-status disconnected">❌ Paste text or upload a file first.</div>';
+            return;
+        }
+        this.importNotesState.loading = true;
+        if (status) status.innerHTML = '<div class="ai-status analyzing"><span class="spinner"></span> Extracting structured items from notes...</div>';
+
+        try {
+            const extracted = await StorageService.importFromNotes(text);
+            this.importNotesState.extracted = extracted;
+            this.importNotesState.loading = false;
+            this.initializeImportSelections(extracted);
+            this.computeCanonConflictsForImport(extracted);
+            if (status) status.innerHTML = '<div class="ai-status connected">✅ Extraction complete. Review items below.</div>';
+            this.renderImportPreview();
+        } catch (error) {
+            this.importNotesState.loading = false;
+            if (status) status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(error.message || 'Import failed')}</div>`;
+        }
+    },
+
+    initializeImportSelections(extracted) {
+        const make = (arr) => {
+            const map = {};
+            (Array.isArray(arr) ? arr : []).forEach((_, idx) => { map[idx] = true; });
+            return map;
+        };
+        this.importNotesState.selections = {
+            characters: make(extracted?.characters),
+            timelineEvents: make(extracted?.timelineEvents),
+            relationships: make(extracted?.relationships),
+            politics: make(extracted?.politics),
+            workItems: make(extracted?.workItems)
+        };
+    },
+
+    normKey(text) {
+        return String(text || '').trim().toLowerCase();
+    },
+
+    computeCanonConflictsForImport(extracted) {
+        const chars = Array.isArray(this.storyData.characters) ? this.storyData.characters : [];
+        const events = Array.isArray(this.storyData.events) ? this.storyData.events : [];
+        const work = Array.isArray(this.storyData.workItems) ? this.storyData.workItems : [];
+
+        const canonCharByName = new Map(chars.filter(c => c && c.isCanon).map(c => [this.normKey(c.name), c]));
+        const canonEventByTitle = new Map(events.filter(e => e && e.isCanon).map(e => [this.normKey(e.title), e]));
+        const canonWorkByTitle = new Map(work.filter(w => w && w.isCanon).map(w => [this.normKey(w.title), w]));
+
+        const conflicts = { characters: [], timelineEvents: [], workItems: [] };
+        const resolutions = {};
+
+        (extracted?.characters || []).forEach((c, idx) => {
+            const match = canonCharByName.get(this.normKey(c.name));
+            if (!match) return;
+            const key = `character:${match.id}:${idx}`;
+            conflicts.characters.push({ key, importedIndex: idx, canon: match, imported: c });
+            resolutions[key] = 'keep';
+            // Default unselect conflicting import rows (they require explicit choice).
+            this.importNotesState.selections.characters[idx] = false;
+        });
+
+        (extracted?.timelineEvents || []).forEach((e, idx) => {
+            const match = canonEventByTitle.get(this.normKey(e.title));
+            if (!match) return;
+            const key = `timeline:${match.id}:${idx}`;
+            conflicts.timelineEvents.push({ key, importedIndex: idx, canon: match, imported: e });
+            resolutions[key] = 'keep';
+            this.importNotesState.selections.timelineEvents[idx] = false;
+        });
+
+        (extracted?.workItems || []).forEach((w, idx) => {
+            const match = canonWorkByTitle.get(this.normKey(w.title));
+            if (!match) return;
+            const key = `workItem:${match.id}:${idx}`;
+            conflicts.workItems.push({ key, importedIndex: idx, canon: match, imported: w });
+            resolutions[key] = 'keep';
+            this.importNotesState.selections.workItems[idx] = false;
+        });
+
+        this.importNotesState.conflicts = conflicts;
+        this.importNotesState.conflictResolutions = resolutions;
+    },
+
+    setConflictResolution(conflictKey, resolution) {
+        const allowed = new Set(['keep', 'draft', 'replace']);
+        if (!allowed.has(resolution)) return;
+        this.importNotesState.conflictResolutions[conflictKey] = resolution;
+        this.renderImportPreview();
+    },
+
+    toggleImportSelection(group, idx, checked) {
+        if (!this.importNotesState.selections[group]) return;
+        this.importNotesState.selections[group][idx] = Boolean(checked);
+    },
+
+    renderImportNotesUI() {
+        const pasteTab = document.getElementById('importTabPaste');
+        const uploadTab = document.getElementById('importTabUpload');
+        const pastePane = document.getElementById('importPanePaste');
+        const uploadPane = document.getElementById('importPaneUpload');
+        const active = this.importNotesState.activeTab;
+
+        if (pasteTab && uploadTab) {
+            pasteTab.classList.toggle('active', active === 'paste');
+            uploadTab.classList.toggle('active', active === 'upload');
+        }
+        if (pastePane && uploadPane) {
+            pastePane.style.display = active === 'paste' ? 'block' : 'none';
+            uploadPane.style.display = active === 'upload' ? 'block' : 'none';
+        }
+
+        this.renderImportPreview();
+    },
+
+    renderImportPreview() {
+        const container = document.getElementById('importPreview');
+        if (!container) return;
+
+        const extracted = this.importNotesState.extracted;
+        if (!extracted) {
+            container.innerHTML = '<div class="ai-result">No extracted items yet. Click “Extract with AI” to generate a preview.</div>';
+            return;
+        }
+
+        const renderList = (title, key, arr, renderRow) => {
+            const list = (Array.isArray(arr) ? arr : []);
+            const sels = this.importNotesState.selections[key] || {};
+            const shown = list.slice(0, 50);
+            return `
+                <div class="preview-card">
+                    <h4>${title}</h4>
+                    <ul class="preview-list">
+                        ${shown.length ? shown.map((item, idx) => renderRow(item, idx, sels[idx] !== false)).join('') : `<li class="preview-item"><div class="preview-item-sub">None found.</div></li>`}
+                    </ul>
+                </div>
+            `;
+        };
+
+        const checkbox = (group, idx, checked) =>
+            `<input type="checkbox" ${checked ? 'checked' : ''} onchange="App.toggleImportSelection('${group}', ${idx}, this.checked)">`;
+
+        const safe = (v) => this.escapeHTML(String(v ?? '').trim());
+
+        const conflicts = this.importNotesState.conflicts || { characters: [], timelineEvents: [], workItems: [] };
+        const res = this.importNotesState.conflictResolutions || {};
+
+        const renderConflict = (label, group, conflict) => {
+            const canon = conflict.canon || {};
+            const imp = conflict.imported || {};
+            const choice = res[conflict.key] || 'keep';
+            const canonSide = group === 'characters'
+                ? `Name: ${safe(canon.name)}\nType: ${safe(canon.type)}\nRole: ${safe(canon.role)}\nBackground: ${safe(canon.background)}\nNotes: ${safe(canon.notes)}`
+                : group === 'timelineEvents'
+                    ? `Title: ${safe(canon.title)}\nBeat: ${safe(canon.beat)}\nPeriod: ${safe(canon.period)}\nDescription: ${safe(canon.description)}\nNotes: ${safe(canon.fullDescription)}`
+                    : `Title: ${safe(canon.title)}\nCategory: ${safe(canon.category)}\nCompleted: ${canon.completed ? 'true' : 'false'}`;
+            const impSide = group === 'characters'
+                ? `Name: ${safe(imp.name)}\nType: ${safe(imp.type)}\nDescription: ${safe(imp.description)}`
+                : group === 'timelineEvents'
+                    ? `Title: ${safe(imp.title)}\nBeatType: ${safe(imp.beatType)}\nDescription: ${safe(imp.description)}`
+                    : `Title: ${safe(imp.title)}\nCategory: ${safe(imp.category)}`;
+
+            return `
+                <div class="preview-card" style="border-color: rgba(245, 158, 11, 0.35);">
+                    <h4>⚠️ Conflict with Canon — ${label}</h4>
+                    <div class="preview-item-sub">This imported item matches a Canon item. Choose what to do:</div>
+                    <div class="compare-grid" style="margin-top:0.6rem;">
+                        <div class="compare-block">
+                            <div class="compare-col-title">Canon (Protected)</div>
+                            <pre class="text-sm" style="white-space: pre-wrap; margin:0;">${canonSide}</pre>
+                        </div>
+                        <div class="compare-block">
+                            <div class="compare-col-title">Imported</div>
+                            <pre class="text-sm" style="white-space: pre-wrap; margin:0;">${impSide}</pre>
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:0.5rem; flex-wrap: wrap; margin-top:0.7rem;">
+                        <button class="topbar-ghost ${choice === 'keep' ? 'modal-tab active' : ''}" onclick="App.setConflictResolution('${conflict.key}','keep')">Keep Canon</button>
+                        <button class="topbar-ghost ${choice === 'draft' ? 'modal-tab active' : ''}" onclick="App.setConflictResolution('${conflict.key}','draft')">Merge (add as new Draft)</button>
+                        <button class="topbar-ghost ${choice === 'replace' ? 'modal-tab active' : ''}" onclick="App.setConflictResolution('${conflict.key}','replace')">Replace anyway</button>
+                    </div>
+                </div>
+            `;
+        };
+
+        const conflictsHtml = [
+            ...conflicts.characters.map(c => renderConflict(c.canon?.name || 'Character', 'characters', c)),
+            ...conflicts.timelineEvents.map(c => renderConflict(c.canon?.title || 'Timeline Event', 'timelineEvents', c)),
+            ...conflicts.workItems.map(c => renderConflict(c.canon?.title || 'Work Item', 'workItems', c))
+        ].join('');
+
+        container.innerHTML = `
+            ${conflictsHtml ? `<div class="ai-result warning"><strong>Conflicts with Canon</strong><div class="text-sm text-gray-600" style="margin-top:0.25rem;">Canon items are protected by default. Resolve conflicts to proceed.</div></div>${conflictsHtml}` : ''}
+            <div class="preview-grid">
+                ${renderList('Characters', 'characters', extracted.characters, (c, idx, checked) => `
+                    <li class="preview-item">
+                        ${checkbox('characters', idx, checked)}
+                        <div>
+                            <div class="preview-item-title">${safe(c.name)} <span class="preview-item-sub">(${safe(c.type)})</span></div>
+                            ${c.description ? `<div class="preview-item-sub">${safe(c.description)}</div>` : ''}
+                        </div>
+                    </li>
+                `)}
+                ${renderList('Timeline Events', 'timelineEvents', extracted.timelineEvents, (e, idx, checked) => `
+                    <li class="preview-item">
+                        ${checkbox('timelineEvents', idx, checked)}
+                        <div>
+                            <div class="preview-item-title">${safe(e.title)}</div>
+                            <div class="preview-item-sub">${safe([e.beatType ? `Beat: ${e.beatType}` : '', e.description].filter(Boolean).join(' • '))}</div>
+                        </div>
+                    </li>
+                `)}
+                ${renderList('Relationships', 'relationships', extracted.relationships, (r, idx, checked) => `
+                    <li class="preview-item">
+                        ${checkbox('relationships', idx, checked)}
+                        <div>
+                            <div class="preview-item-title">${safe(r.from)} ↔ ${safe(r.to)} <span class="preview-item-sub">(${safe(r.type || 'other')})</span></div>
+                            ${r.description ? `<div class="preview-item-sub">${safe(r.description)}</div>` : ''}
+                        </div>
+                    </li>
+                `)}
+                ${renderList('Politics / Worldbuilding', 'politics', extracted.politics, (p, idx, checked) => `
+                    <li class="preview-item">
+                        ${checkbox('politics', idx, checked)}
+                        <div>
+                            <div class="preview-item-title">${safe(p.section || 'Imported')}</div>
+                            <div class="preview-item-sub">${safe(p.content)}</div>
+                        </div>
+                    </li>
+                `)}
+                ${renderList('Suggested Work Items', 'workItems', extracted.workItems, (w, idx, checked) => `
+                    <li class="preview-item">
+                        ${checkbox('workItems', idx, checked)}
+                        <div>
+                            <div class="preview-item-title">${safe(w.title)}</div>
+                            <div class="preview-item-sub">${safe(w.category || 'Scene Planning')}</div>
+                        </div>
+                    </li>
+                `)}
+            </div>
+        `;
+    },
+
+    addImportedToStory() {
+        const extracted = this.importNotesState.extracted;
+        if (!extracted) return;
+
+        const sel = this.importNotesState.selections;
+        const pick = (key) => (Array.isArray(extracted[key]) ? extracted[key].filter((_, idx) => sel[key]?.[idx] !== false) : []);
+
+        const payload = {
+            characters: pick('characters'),
+            timelineEvents: pick('timelineEvents'),
+            relationships: pick('relationships'),
+            politics: pick('politics'),
+            workItems: pick('workItems')
+        };
+
+        const result = this.mergeImportedPayload(payload, {
+            conflictResolutions: this.importNotesState.conflictResolutions || {},
+            conflicts: this.importNotesState.conflicts || {}
+        });
+        this.save();
+        this.switchTab('dashboard');
+        this.closeImportNotesModal();
+        alert(`Import summary: ${result.draftsAdded} new draft item(s) added. ${result.canonProtected} canon item(s) protected.`);
+    },
+
+    async analyzeAndImportDashboardNotes() {
+        const status = document.getElementById('dashboardImportStatus');
+        const textarea = document.getElementById('dashboardRawNotes');
+        const raw = String(textarea?.value || '').trim();
+
+        if (!raw) {
+            if (status) status.innerHTML = '<div class="ai-status disconnected">❌ Paste notes first.</div>';
+            return;
+        }
+
+        if (status) status.innerHTML = '<div class="ai-status analyzing"><span class="spinner"></span> Analyzing notes and building suggestions...</div>';
+
+        try {
+            const extracted = await StorageService.importFromNotes(raw);
+            // Dashboard flow focuses on Characters, Timeline, Relationships (as requested).
+            const focused = {
+                characters: extracted.characters || [],
+                timelineEvents: extracted.timelineEvents || [],
+                relationships: extracted.relationships || [],
+                politics: [],
+                workItems: []
+            };
+
+            this.importNotesState.extracted = focused;
+            this.initializeImportSelections(focused);
+            this.openAnalyzeImportModal();
+
+            if (status) status.innerHTML = '<div class="ai-status connected">✅ Suggestions ready. Review and import.</div>';
+        } catch (error) {
+            if (status) status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(error.message || 'Analysis failed')}</div>`;
+        }
+    },
+
+    openAnalyzeImportModal() {
+        document.getElementById('analyzeImportModal')?.classList.add('active');
+        this.renderAnalyzeImportComparison();
+    },
+
+    closeAnalyzeImportModal() {
+        document.getElementById('analyzeImportModal')?.classList.remove('active');
+    },
+
+    renderAnalyzeImportComparison() {
+        const container = document.getElementById('analyzeImportCompare');
+        if (!container) return;
+
+        const extracted = this.importNotesState.extracted;
+        if (!extracted) {
+            container.innerHTML = '<div class="ai-result">No suggestions yet.</div>';
+            return;
+        }
+
+        const safe = (v) => this.escapeHTML(String(v ?? '').trim());
+        const existingChars = Array.isArray(this.storyData.characters) ? this.storyData.characters : [];
+        const existingEvents = Array.isArray(this.storyData.events) ? this.storyData.events : [];
+        const existingRel = this.computeRelationshipPairs();
+
+        const sel = this.importNotesState.selections;
+
+        const currentList = (items, render) => `
+            <ul class="compare-list">
+                ${items.length ? items.slice(0, 40).map(render).join('') : `<li class="compare-row"><div class="preview-item-sub">None yet.</div></li>`}
+            </ul>
+        `;
+
+        const suggestedList = (group, items, render) => `
+            <ul class="compare-list">
+                ${items.length ? items.slice(0, 60).map((it, idx) => `
+                    <li class="compare-row">
+                        <input type="checkbox" ${sel[group]?.[idx] !== false ? 'checked' : ''} onchange="App.toggleImportSelection('${group}', ${idx}, this.checked)">
+                        <div>${render(it)}</div>
+                    </li>
+                `).join('') : `<li class="compare-row"><div class="preview-item-sub">No suggestions.</div></li>`}
+            </ul>
+        `;
+
+        container.innerHTML = `
+            <div class="compare-grid">
+                <div class="compare-block">
+                    <div class="compare-col-title">Current Story</div>
+                    <div class="text-sm text-gray-600">Characters (${existingChars.length})</div>
+                    ${currentList(existingChars, c => `<li class="compare-row"><div><div class="preview-item-title">${safe(c.name)}</div><div class="preview-item-sub">${safe(c.role || c.type || '')}</div></div></li>`)}
+                    <div class="text-sm text-gray-600" style="margin-top:0.75rem;">Timeline (${existingEvents.length})</div>
+                    ${currentList(existingEvents, e => `<li class="compare-row"><div><div class="preview-item-title">${safe(e.title)}</div><div class="preview-item-sub">${safe(e.period || '')}</div></div></li>`)}
+                    <div class="text-sm text-gray-600" style="margin-top:0.75rem;">Relationships (linked)</div>
+                    ${currentList(existingRel, r => `<li class="compare-row"><div class="preview-item-sub">${safe(r)}</div></li>`)}
+                </div>
+
+                <div class="compare-block">
+                    <div class="compare-col-title">Suggested Additions</div>
+                    <div class="text-sm text-gray-600">Characters (${(extracted.characters || []).length})</div>
+                    ${suggestedList('characters', extracted.characters || [], c => `
+                        <div>
+                            <div class="preview-item-title">${safe(c.name)} <span class="preview-item-sub">(${safe(c.type)})</span></div>
+                            ${c.description ? `<div class="preview-item-sub">${safe(c.description)}</div>` : ''}
+                        </div>
+                    `)}
+                    <div class="text-sm text-gray-600" style="margin-top:0.75rem;">Timeline (${(extracted.timelineEvents || []).length})</div>
+                    ${suggestedList('timelineEvents', extracted.timelineEvents || [], e => `
+                        <div>
+                            <div class="preview-item-title">${safe(e.title)}</div>
+                            <div class="preview-item-sub">${safe([e.beatType ? `Beat: ${e.beatType}` : '', e.description].filter(Boolean).join(' • '))}</div>
+                        </div>
+                    `)}
+                    <div class="text-sm text-gray-600" style="margin-top:0.75rem;">Relationships (${(extracted.relationships || []).length})</div>
+                    ${suggestedList('relationships', extracted.relationships || [], r => `
+                        <div>
+                            <div class="preview-item-title">${safe(r.from)} ↔ ${safe(r.to)} <span class="preview-item-sub">(${safe(r.type || 'other')})</span></div>
+                            ${r.description ? `<div class="preview-item-sub">${safe(r.description)}</div>` : ''}
+                        </div>
+                    `)}
+                </div>
+            </div>
+        `;
+    },
+
+    computeRelationshipPairs() {
+        const chars = Array.isArray(this.storyData.characters) ? this.storyData.characters : [];
+        const byId = new Map(chars.map(c => [c.id, c]));
+        const pairs = new Set();
+        chars.forEach(c => {
+            const rel = Array.isArray(c.relatedCharacters) ? c.relatedCharacters : [];
+            rel.forEach(id => {
+                const other = byId.get(id);
+                if (!other) return;
+                const a = String(c.name || '').trim();
+                const b = String(other.name || '').trim();
+                const key = [a, b].sort((x, y) => x.localeCompare(y)).join(' ↔ ');
+                if (a && b) pairs.add(key);
+            });
+        });
+        return Array.from(pairs).slice(0, 40);
+    },
+
+    applyDashboardSuggestions() {
+        const extracted = this.importNotesState.extracted;
+        if (!extracted) return;
+
+        const sel = this.importNotesState.selections;
+        const pick = (key) => (Array.isArray(extracted[key]) ? extracted[key].filter((_, idx) => sel[key]?.[idx] !== false) : []);
+
+        const payload = {
+            characters: pick('characters'),
+            timelineEvents: pick('timelineEvents'),
+            relationships: pick('relationships'),
+            politics: [],
+            workItems: []
+        };
+
+        const result = this.mergeImportedPayload(payload);
+        this.save();
+        this.closeAnalyzeImportModal();
+        alert(`Added: ${result.charactersAdded} character(s), ${result.eventsAdded} event(s), ${result.relationshipsAdded} relationship link(s).`);
+    },
+
+    mergeImportedPayload(payload, options = {}) {
+        const norm = (s) => String(s || '').trim().toLowerCase();
+        const safeStr = (v) => String(v ?? '').trim();
+        const tagsImported = ['imported'];
+        const conflicts = options.conflicts || { characters: [], timelineEvents: [], workItems: [] };
+        const resolutions = options.conflictResolutions || {};
+
+        const existingChars = Array.isArray(this.storyData.characters) ? this.storyData.characters : [];
+        const existingEvents = Array.isArray(this.storyData.events) ? this.storyData.events : [];
+        const existingPolitics = Array.isArray(this.storyData.politics) ? this.storyData.politics : [];
+        const existingWork = Array.isArray(this.storyData.workItems) ? this.storyData.workItems : [];
+
+        const charByName = new Map(existingChars.map(c => [norm(c.name), c]));
+        const eventByTitle = new Map(existingEvents.map(e => [norm(e.title), e]));
+        const workByTitle = new Set(existingWork.map(w => norm(w.title)));
+
+        let nextCharId = Math.max(...existingChars.map(c => c.id), 0) + 1;
+        let nextEventId = Math.max(...existingEvents.map(e => e.id), 0) + 1;
+        let nextWorkId = Math.max(...existingWork.map(w => w.id), 0) + 1;
+
+        let charactersAdded = 0;
+        let eventsAdded = 0;
+        let relationshipsAdded = 0;
+        let politicsAdded = 0;
+        let workItemsAdded = 0;
+        let canonProtected = 0;
+        let draftsAdded = 0;
+
+        const conflictDecisionFor = (group, canonId, importedIndex) => {
+            const keyPrefix = group === 'characters' ? 'character' : (group === 'timelineEvents' ? 'timeline' : 'workItem');
+            const key = `${keyPrefix}:${canonId}:${importedIndex}`;
+            return resolutions[key] || 'keep';
+        };
+
+        // Characters
+        (payload.characters || []).forEach(c => {
+            const nameKey = norm(c.name);
+            if (!nameKey) return;
+            const existing = charByName.get(nameKey);
+            if (existing) {
+                if (existing.isCanon) {
+                    // Find conflict by name if present; default keep.
+                    const conflict = (conflicts.characters || []).find(x => norm(x.canon?.name) === nameKey);
+                    const decision = conflict ? conflictDecisionFor('characters', conflict.canon.id, conflict.importedIndex) : 'keep';
+                    if (decision === 'keep') {
+                        canonProtected += 1;
+                        return;
+                    }
+                    if (decision === 'draft') {
+                        const newChar = {
+                            id: nextCharId++,
+                            name: `${safeStr(c.name)} (Draft)`,
+                            age: 0,
+                            role: '',
+                            type: c.type || 'friendly',
+                            background: safeStr(c.description),
+                            personality: '',
+                            relatedCharacters: [],
+                            notes: '',
+                            isCanon: false,
+                            tags: tagsImported
+                        };
+                        existingChars.push(newChar);
+                        charByName.set(norm(newChar.name), newChar);
+                        charactersAdded += 1;
+                        draftsAdded += 1;
+                        return;
+                    }
+                    // replace anyway
+                    existing.type = c.type || existing.type;
+                    const desc = safeStr(c.description);
+                    if (desc) existing.background = desc;
+                    existing.tags = Array.isArray(existing.tags) ? Array.from(new Set([...existing.tags, ...tagsImported])) : tagsImported;
+                    return;
+                }
+                // Merge description into notes if helpful.
+                const desc = safeStr(c.description);
+                if (desc && !safeStr(existing.notes).toLowerCase().includes(desc.toLowerCase())) {
+                    existing.notes = safeStr(existing.notes) ? `${existing.notes}\nImported: ${desc}` : `Imported: ${desc}`;
+                }
+                if (c.type && !existing.type) existing.type = c.type;
+                existing.tags = Array.isArray(existing.tags) ? Array.from(new Set([...existing.tags, ...tagsImported])) : tagsImported;
+                return;
+            }
+            const newChar = {
+                id: nextCharId++,
+                name: safeStr(c.name),
+                age: 0,
+                role: '',
+                type: c.type || 'friendly',
+                background: safeStr(c.description),
+                personality: '',
+                relatedCharacters: [],
+                notes: '',
+                isCanon: false,
+                tags: tagsImported
+            };
+            existingChars.push(newChar);
+            charByName.set(nameKey, newChar);
+            charactersAdded += 1;
+            draftsAdded += 1;
+        });
+
+        // Events
+        (payload.timelineEvents || []).forEach(e => {
+            const titleKey = norm(e.title);
+            if (!titleKey) return;
+            if (eventByTitle.get(titleKey)) return;
+            const beatType = safeStr(e.beatType);
+            const desc = safeStr(e.description);
+            const combinedDesc = [beatType ? `[Beat: ${beatType}]` : '', desc].filter(Boolean).join(' ');
+
+            const newEvent = {
+                id: nextEventId++,
+                title: safeStr(e.title),
+                period: '',
+                order: existingEvents.length,
+                beat: null,
+                description: combinedDesc,
+                fullDescription: '',
+                involvedCharacterIds: [],
+                isCanon: false,
+                tags: tagsImported
+            };
+            existingEvents.push(newEvent);
+            eventByTitle.set(titleKey, newEvent);
+            eventsAdded += 1;
+            draftsAdded += 1;
+        });
+
+        // Relationships → map by character names and link relatedCharacters (bidirectional)
+        (payload.relationships || []).forEach(r => {
+            const fromKey = norm(r.from);
+            const toKey = norm(r.to);
+            const from = charByName.get(fromKey);
+            const to = charByName.get(toKey);
+            if (!from || !to) return;
+
+            const already = Array.isArray(from.relatedCharacters) && from.relatedCharacters.includes(to.id);
+            if (!already) {
+                from.relatedCharacters = Array.isArray(from.relatedCharacters) ? from.relatedCharacters : [];
+                to.relatedCharacters = Array.isArray(to.relatedCharacters) ? to.relatedCharacters : [];
+                from.relatedCharacters.push(to.id);
+                to.relatedCharacters.push(from.id);
+                relationshipsAdded += 1;
+            }
+
+            const desc = safeStr(r.description);
+            const tag = safeStr(r.type || 'other');
+            if (desc) {
+                if (from.isCanon) return;
+                const line = `Relationship (${tag}) with ${to.name}: ${desc}`;
+                if (!safeStr(from.notes).toLowerCase().includes(line.toLowerCase())) {
+                    from.notes = safeStr(from.notes) ? `${from.notes}\n${line}` : line;
+                }
+            }
+        });
+
+        // Politics/worldbuilding: add as new sections if not duplicated by section+content
+        const polKey = (p) => `${norm(p.section)}::${norm(p.content)}`;
+        const existingPolSet = new Set(existingPolitics.map(polKey));
+        (payload.politics || []).forEach(p => {
+            const section = safeStr(p.section || 'Imported Notes');
+            const content = safeStr(p.content);
+            if (!content) return;
+            const key = `${norm(section)}::${norm(content)}`;
+            if (existingPolSet.has(key)) return;
+            existingPolitics.push({ section, content });
+            existingPolSet.add(key);
+            politicsAdded += 1;
+        });
+
+        // Work items
+        (payload.workItems || []).forEach(w => {
+            const title = safeStr(w.title);
+            if (!title) return;
+            const key = norm(title);
+            if (workByTitle.has(key)) return;
+            existingWork.push({
+                id: nextWorkId++,
+                title,
+                category: safeStr(w.category || 'Scene Planning'),
+                completed: false,
+                isCanon: false,
+                tags: tagsImported
+            });
+            workByTitle.add(key);
+            workItemsAdded += 1;
+            draftsAdded += 1;
+        });
+
+        // Re-attach mutated arrays back (defensive)
+        this.storyData.characters = existingChars;
+        this.storyData.events = existingEvents;
+        this.storyData.politics = existingPolitics;
+        this.storyData.workItems = existingWork;
+
+        return { charactersAdded, eventsAdded, relationshipsAdded, politicsAdded, workItemsAdded, canonProtected, draftsAdded };
     },
 
     // ============ MASTER DOCUMENT ============
@@ -424,7 +1962,9 @@ const App = {
             background,
             personality,
             relatedCharacters: [],
-            notes
+            notes,
+            isCanon: false,
+            tags: []
         };
 
         this.storyData.characters.push(newCharacter);
@@ -444,6 +1984,10 @@ const App = {
      * Delete character
      */
     deleteCharacter(id) {
+        if (StorageService.isCanonProtected(id, 'character')) {
+            alert('This character is marked as Canon and is protected from deletion.');
+            return;
+        }
         if (confirm('Delete this character?')) {
             this.storyData.characters = this.storyData.characters.filter(c => c.id !== id);
             this.save();
@@ -587,11 +2131,32 @@ const App = {
     renderCharacters() {
         const container = document.getElementById('charactersContainer');
         const searchTerm = document.getElementById('characterSearch').value.toLowerCase();
+        const typeFilter = this.globalSearch.characterTypes;
+        const q = this.globalSearch.query.trim().toLowerCase();
         
-        const filtered = this.storyData.characters.filter(char =>
-            char.name.toLowerCase().includes(searchTerm) ||
-            char.role.toLowerCase().includes(searchTerm)
-        );
+        const matchesChar = (char) => {
+            const localMatch = char.name.toLowerCase().includes(searchTerm) || char.role.toLowerCase().includes(searchTerm);
+            const globalMatch = !q || (
+                (char.name || '').toLowerCase().includes(q)
+                || (char.role || '').toLowerCase().includes(q)
+                || (char.background || '').toLowerCase().includes(q)
+                || (char.personality || '').toLowerCase().includes(q)
+                || (char.notes || '').toLowerCase().includes(q)
+            );
+            // Relationship match: query matches any related character name.
+            const rel = Array.isArray(char.relatedCharacters) ? char.relatedCharacters : [];
+            const relMatch = !q || rel
+                .map(id => this.storyData.characters.find(c => c.id === id))
+                .filter(Boolean)
+                .some(rc => (rc.name || '').toLowerCase().includes(q));
+
+            const typeOk = typeFilter.size === 0 || typeFilter.has(char.type);
+            return typeOk && localMatch && (globalMatch || relMatch);
+        };
+
+        const filtered = this.storyData.characters
+            .filter(c => !this.canonUI.showCanonOnlyCharacters || c.isCanon)
+            .filter(matchesChar);
 
         container.innerHTML = filtered.map(char => {
             const relatedNames = char.relatedCharacters
@@ -599,10 +2164,28 @@ const App = {
                 .filter(c => c);
 
             return `
-                <div class="card character-card ${char.type}">
+                <div
+                    class="card character-card ${char.type} ${char.isCanon ? 'canon-locked' : ''}"
+                    draggable="true"
+                    data-character-id="${char.id}"
+                    ondragstart="App.onCharacterDragStart(event, ${char.id})"
+                    ondragend="App.onCharacterDragEnd(event)"
+                    ondragover="App.onCharacterCardDragOver(event)"
+                    ondragleave="App.onCharacterCardDragLeave(event)"
+                    ondrop="App.onCharacterCardDrop(event, ${char.id})"
+                    title="Drag onto another character to create a relationship. Bonus: drag onto a timeline event to mark involved characters."
+                >
                     <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
                         <div>
-                            <h3>${this.getCharacterEmoji(char.type)} ${char.name}</h3>
+                            <h3>
+                                ${this.getCharacterEmoji(char.type)}
+                                ${
+                                    this.inlineEdit.kind === 'character' && this.inlineEdit.id === char.id && this.inlineEdit.field === 'name'
+                                        ? `<input class="form-input inline-edit-input" style="display:inline-block; width: min(420px, 80vw); margin:0 0 0 0.4rem; padding:0.4rem 0.6rem;" value="${this.escapeHTML(this.inlineEdit.value)}" oninput="App.onInlineEditInput(this.value)" onkeydown="App.onInlineEditKeydown(event)" onblur="App.commitInlineEdit()">`
+                                        : `<span style="cursor:text;" onclick="App.startInlineEdit('character', ${char.id}, 'name', '${this.escapeHTML(char.name)}')">${this.escapeHTML(char.name)}</span>`
+                                }
+                                ${char.isCanon ? this.renderCanonBadge('character', char.id) : ''}
+                            </h3>
                             <p class="text-sm text-gray-600">${char.age ? char.age + ' years old' : ''} • ${char.role}</p>
                         </div>
                         <div style="display:flex; gap:0.5rem;">
@@ -629,6 +2212,96 @@ const App = {
         }).join('');
     },
 
+    onCharacterDragStart(event, characterId) {
+        this.draggingCharacterId = characterId;
+        try {
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', String(characterId));
+        } catch (error) {
+            // Ignore dataTransfer issues.
+        }
+    },
+
+    onCharacterDragEnd() {
+        this.draggingCharacterId = null;
+        document.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+    },
+
+    onCharacterCardDragOver(event) {
+        event.preventDefault();
+        const el = event.currentTarget;
+        if (el) el.classList.add('drop-target');
+    },
+
+    onCharacterCardDragLeave(event) {
+        const el = event.currentTarget;
+        if (el) el.classList.remove('drop-target');
+    },
+
+    onCharacterCardDrop(event, targetCharacterId) {
+        event.preventDefault();
+        const el = event.currentTarget;
+        if (el) el.classList.remove('drop-target');
+
+        const raw = (() => {
+            try { return event.dataTransfer.getData('text/plain'); } catch (e) { return ''; }
+        })();
+        const sourceId = Number(raw || this.draggingCharacterId);
+        if (!Number.isFinite(sourceId) || sourceId === targetCharacterId) return;
+
+        this.openRelationshipLinkModal(sourceId, targetCharacterId);
+    },
+
+    openRelationshipLinkModal(fromId, toId) {
+        const from = this.storyData.characters.find(c => c.id === fromId);
+        const to = this.storyData.characters.find(c => c.id === toId);
+        if (!from || !to) return;
+
+        this.relationshipDraft = { fromId, toId, type: 'other', notes: '' };
+        const fromEl = document.getElementById('relFromName');
+        const toEl = document.getElementById('relToName');
+        const typeEl = document.getElementById('relType');
+        const notesEl = document.getElementById('relNotes');
+        if (fromEl) fromEl.textContent = from.name;
+        if (toEl) toEl.textContent = to.name;
+        if (typeEl) typeEl.value = 'other';
+        if (notesEl) notesEl.value = '';
+
+        document.getElementById('relationshipModal')?.classList.add('active');
+    },
+
+    closeRelationshipModal() {
+        document.getElementById('relationshipModal')?.classList.remove('active');
+    },
+
+    confirmRelationshipLink() {
+        const typeEl = document.getElementById('relType');
+        const notesEl = document.getElementById('relNotes');
+        const type = String(typeEl?.value || 'other').trim();
+        const notes = String(notesEl?.value || '').trim();
+
+        const from = this.storyData.characters.find(c => c.id === this.relationshipDraft.fromId);
+        const to = this.storyData.characters.find(c => c.id === this.relationshipDraft.toId);
+        if (!from || !to) return;
+
+        from.relatedCharacters = Array.isArray(from.relatedCharacters) ? from.relatedCharacters : [];
+        to.relatedCharacters = Array.isArray(to.relatedCharacters) ? to.relatedCharacters : [];
+
+        if (!from.relatedCharacters.includes(to.id)) from.relatedCharacters.push(to.id);
+        if (!to.relatedCharacters.includes(from.id)) to.relatedCharacters.push(from.id);
+
+        if (notes) {
+            const lineA = `Relationship (${type}) with ${to.name}: ${notes}`;
+            const lineB = `Relationship (${type}) with ${from.name}: ${notes}`;
+            from.notes = from.notes ? `${from.notes}\n${lineA}` : lineA;
+            to.notes = to.notes ? `${to.notes}\n${lineB}` : lineB;
+        }
+
+        this.save();
+        this.closeRelationshipModal();
+        this.renderCharacters();
+    },
+
     // ============ TIMELINE ============
 
     /**
@@ -652,7 +2325,10 @@ const App = {
             order: this.storyData.events.length,
             beat: beat || null,
             description,
-            fullDescription: ''
+            fullDescription: '',
+            involvedCharacterIds: [],
+            isCanon: false,
+            tags: []
         };
 
         this.storyData.events.push(newEvent);
@@ -669,6 +2345,10 @@ const App = {
      * Delete event
      */
     deleteEvent(id) {
+        if (StorageService.isCanonProtected(id, 'timeline')) {
+            alert('This timeline event is marked as Canon and is protected from deletion.');
+            return;
+        }
         if (confirm('Delete this event?')) {
             this.storyData.events = this.storyData.events.filter(e => e.id !== id);
             this.storyData.events.forEach((e, i) => e.order = i);
@@ -765,7 +2445,23 @@ const App = {
         const centerX = 300;
         const centerY = 300;
 
-        const eventsWithBeat = this.storyData.events.filter(e => e.beat);
+        const sortedEventsAll = [...this.storyData.events].sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0));
+        const beatFilter = this.globalSearch.beats;
+        const q = this.globalSearch.query.trim().toLowerCase();
+        const sortedEvents = sortedEventsAll
+            .filter(ev => !this.canonUI.showCanonOnlyTimeline || ev.isCanon)
+            .filter(ev => {
+                const beatOk = beatFilter.size === 0 || (ev.beat && beatFilter.has(String(ev.beat)));
+                if (!beatOk) return false;
+                if (!q) return true;
+                const involvedNames = (Array.isArray(ev.involvedCharacterIds) ? ev.involvedCharacterIds : [])
+                    .map(id => this.storyData.characters.find(c => c.id === id)?.name)
+                    .filter(Boolean)
+                    .join(' ');
+                const blob = `${ev.title || ''} ${ev.period || ''} ${ev.description || ''} ${ev.fullDescription || ''} ${involvedNames}`;
+                return blob.toLowerCase().includes(q);
+            });
+        const eventsWithBeat = sortedEvents.filter(e => e.beat);
         const beatOffsets = {};
 
         circleContainer.innerHTML = eventsWithBeat
@@ -794,21 +2490,65 @@ const App = {
                 `;
             }).join('');
 
+        const charById = new Map((this.storyData.characters || []).map(c => [c.id, c]));
+
         timelineContainer.innerHTML = `
-            <div style="margin-top: 2rem;">
-                ${this.storyData.events.map(event => `
-                    <div class="timeline-event">
+            <div id="timelineList" style="margin-top: 2rem;">
+                ${sortedEvents.map(event => `
+                    <div class="timeline-event ${event.isCanon ? 'canon-locked' : ''}"
+                         data-event-id="${event.id}"
+                         ondragover="App.onTimelineEventDragOver(event)"
+                         ondragleave="App.onTimelineEventDragLeave(event)"
+                         ondrop="App.onTimelineEventDrop(event, ${event.id})"
+                    >
+                        <div class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</div>
                         <div class="timeline-dot"></div>
                         <div style="flex: 1;">
-                            <button
-                                onclick="App.openEventEditor(${event.id})"
-                                style="background: transparent; color: #1d4ed8; padding: 0; font-weight: 700; text-align: left; border: none; text-decoration: underline; text-underline-offset: 2px;"
-                                title="Edit event: ${event.title}"
-                            >
-                                ${event.title}
-                            </button>
-                            <div class="text-sm text-gray-600">${event.period}${event.beat ? ` • Story Beat ${event.beat}` : ''}</div>
+                            <div style="display:flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap;">
+                                ${
+                                    this.inlineEdit.kind === 'event' && this.inlineEdit.id === event.id && this.inlineEdit.field === 'title'
+                                        ? `<input class="form-input inline-edit-input" style="flex: 1; min-width: 220px; margin:0; padding:0.45rem 0.65rem;" value="${this.escapeHTML(this.inlineEdit.value)}" oninput="App.onInlineEditInput(this.value)" onkeydown="App.onInlineEditKeydown(event)" onblur="App.commitInlineEdit()">`
+                                        : `<span style="font-weight:900; text-decoration: underline; text-underline-offset: 2px; cursor:text; color:#1d4ed8;" onclick="App.startInlineEdit('event', ${event.id}, 'title', '${this.escapeHTML(event.title)}')" title="Click to rename">${this.escapeHTML(event.title)}</span>
+                                           ${event.isCanon ? this.renderCanonBadge('timeline', event.id) : ''}`
+                                }
+                                <button class="topbar-ghost" style="padding:0.35rem 0.6rem; font-size:0.8rem;" onclick="App.openEventEditor(${event.id})" title="Open full editor">Details</button>
+                            </div>
+                            <div class="text-sm text-gray-600">
+                                ${this.escapeHTML(event.period || '')}
+                                ${
+                                    this.inlineEdit.kind === 'event' && this.inlineEdit.id === event.id && this.inlineEdit.field === 'beat'
+                                        ? `<select class="form-input inline-edit-input" style="display:inline-block; width:auto; margin:0 0 0 0.4rem; padding:0.35rem 0.55rem;" oninput="App.onInlineEditInput(this.value)" onkeydown="App.onInlineEditKeydown(event)" onblur="App.commitInlineEdit()">
+                                            <option value="" ${!event.beat ? 'selected' : ''}>No beat</option>
+                                            <option value="1" ${event.beat === '1' ? 'selected' : ''}>Beat 1</option>
+                                            <option value="2" ${event.beat === '2' ? 'selected' : ''}>Beat 2</option>
+                                            <option value="3" ${event.beat === '3' ? 'selected' : ''}>Beat 3</option>
+                                            <option value="4" ${event.beat === '4' ? 'selected' : ''}>Beat 4</option>
+                                            <option value="5" ${event.beat === '5' ? 'selected' : ''}>Beat 5</option>
+                                            <option value="6" ${event.beat === '6' ? 'selected' : ''}>Beat 6</option>
+                                            <option value="7" ${event.beat === '7' ? 'selected' : ''}>Beat 7</option>
+                                            <option value="8" ${event.beat === '8' ? 'selected' : ''}>Beat 8</option>
+                                        </select>`
+                                        : `${event.beat ? ` • <span style="cursor:text; text-decoration: underline; text-underline-offset: 2px;" onclick="App.startInlineEdit('event', ${event.id}, 'beat', '${this.escapeHTML(event.beat)}')" title="Click to change beat">Story Beat ${this.escapeHTML(event.beat)}</span>` : ` • <span style="cursor:text; text-decoration: underline; text-underline-offset: 2px;" onclick="App.startInlineEdit('event', ${event.id}, 'beat', '')" title="Click to assign beat">Assign beat</span>`}`
+                                }
+                            </div>
                             ${event.description ? `<div class="text-sm text-gray-700 mt-1">${event.description}</div>` : ''}
+                            ${
+                                Array.isArray(event.involvedCharacterIds) && event.involvedCharacterIds.length
+                                    ? `<div class="mb-2" style="margin-top:0.5rem;">
+                                        <strong class="text-sm">Involved:</strong>
+                                        <div class="related-characters-container" style="margin-top:0.35rem;">
+                                            ${event.involvedCharacterIds
+                                                .map(id => charById.get(id))
+                                                .filter(Boolean)
+                                                .map(c => `
+                                                    <span class="character-badge ${c.type}" style="cursor: default;">
+                                                        ${App.getCharacterEmoji(c.type)} ${App.escapeHTML(c.name)}
+                                                    </span>
+                                                `).join('')}
+                                        </div>
+                                    </div>`
+                                    : ''
+                            }
                             ${event.fullDescription ? `<div class="text-sm text-gray-600 mt-2 italic">${event.fullDescription.substring(0, 100)}${event.fullDescription.length > 100 ? '...' : ''}</div>` : ''}
                         </div>
                         <button class="delete-btn" onclick="App.deleteEvent(${event.id}); event.stopPropagation();">Delete</button>
@@ -816,6 +2556,96 @@ const App = {
                 `).join('')}
             </div>
         `;
+
+        this.initTimelineDragAndDrop();
+    },
+
+    onTimelineEventDragOver(event) {
+        // allow character drop
+        event.preventDefault();
+        const el = event.currentTarget;
+        if (el) el.classList.add('drop-target');
+    },
+
+    onTimelineEventDragLeave(event) {
+        const el = event.currentTarget;
+        if (el) el.classList.remove('drop-target');
+    },
+
+    onTimelineEventDrop(event, eventId) {
+        event.preventDefault();
+        const el = event.currentTarget;
+        if (el) el.classList.remove('drop-target');
+
+        const raw = (() => {
+            try { return event.dataTransfer.getData('text/plain'); } catch (e) { return ''; }
+        })();
+        const characterId = Number(raw || this.draggingCharacterId);
+        if (!Number.isFinite(characterId)) return;
+
+        const ev = this.storyData.events.find(e => e.id === eventId);
+        if (!ev) return;
+
+        ev.involvedCharacterIds = Array.isArray(ev.involvedCharacterIds) ? ev.involvedCharacterIds : [];
+        if (!ev.involvedCharacterIds.includes(characterId)) {
+            ev.involvedCharacterIds.push(characterId);
+            StorageService.saveStoryData(this.storyData);
+            this.renderTimelineWithCircle();
+        }
+    },
+
+    initTimelineDragAndDrop() {
+        const list = document.getElementById('timelineList');
+        if (!list) return;
+        if (typeof Sortable === 'undefined') return;
+
+        // Re-init safely on re-render.
+        try {
+            if (this.timelineSortable && this.timelineSortable.destroy) {
+                this.timelineSortable.destroy();
+            }
+        } catch (error) {
+            // Ignore destroy errors.
+        }
+
+        this.timelineSortable = Sortable.create(list, {
+            animation: 160,
+            handle: '.drag-handle',
+            ghostClass: 'sortable-ghost',
+            onEnd: () => {
+                this.persistTimelineOrderFromDOM();
+            }
+        });
+    },
+
+    persistTimelineOrderFromDOM() {
+        const list = document.getElementById('timelineList');
+        if (!list) return;
+
+        const ids = Array.from(list.querySelectorAll('[data-event-id]'))
+            .map(el => Number(el.getAttribute('data-event-id')))
+            .filter(n => Number.isFinite(n));
+
+        const byId = new Map(this.storyData.events.map(e => [e.id, e]));
+        const reordered = [];
+        ids.forEach((id, idx) => {
+            const ev = byId.get(id);
+            if (!ev) return;
+            ev.order = idx;
+            reordered.push(ev);
+        });
+
+        // Append any events not present in DOM (safety).
+        this.storyData.events
+            .filter(e => !ids.includes(e.id))
+            .forEach(e => {
+                e.order = reordered.length;
+                reordered.push(e);
+            });
+
+        this.storyData.events = reordered;
+        StorageService.saveStoryData(this.storyData);
+        this.renderTimelineWithCircle();
     },
 
     // ============ PLOT & POLITICS ============
@@ -864,7 +2694,9 @@ const App = {
             id: Math.max(...this.storyData.workItems.map(w => w.id), 0) + 1,
             title,
             category,
-            completed: false
+            completed: false,
+            isCanon: false,
+            tags: []
         });
 
         this.save();
@@ -888,6 +2720,10 @@ const App = {
      * Delete work item
      */
     deleteWorkItem(id) {
+        if (StorageService.isCanonProtected(id, 'workItem')) {
+            alert('This work item is marked as Canon and is protected from deletion.');
+            return;
+        }
         this.storyData.workItems = this.storyData.workItems.filter(w => w.id !== id);
         this.save();
         this.renderWorkItems();
@@ -980,7 +2816,15 @@ const App = {
         const container = document.getElementById('workitemsContainer');
         const grouped = {};
 
-        this.storyData.workItems.forEach(item => {
+        const q = this.globalSearch.query.trim().toLowerCase();
+        this.storyData.workItems
+            .filter(item => !this.canonUI.showCanonOnlyWorkItems || item.isCanon)
+            .filter(item => {
+                if (!q) return true;
+                const blob = `${item.title || ''} ${item.category || ''}`;
+                return blob.toLowerCase().includes(q);
+            })
+            .forEach(item => {
             if (!grouped[item.category]) grouped[item.category] = [];
             grouped[item.category].push(item);
         });
@@ -992,6 +2836,7 @@ const App = {
                     <div class="work-item">
                         <input type="checkbox" ${item.completed ? 'checked' : ''} onchange="App.toggleWorkItem(${item.id})">
                         <span style="flex: 1; ${item.completed ? 'text-decoration: line-through; color: #999;' : ''}">${item.title}</span>
+                        ${item.isCanon ? this.renderCanonBadge('workItem', item.id) : ''}
                         <button style="background:#2563eb; margin-right:0.4rem;" onclick="App.editWorkItem(${item.id})">Edit</button>
                         <button style="background:#7c3aed; margin-right:0.4rem;" onclick="App.runDeepResearchWorkItem(${item.id})">Deep Research Agent</button>
                         <button style="background:#4b5563; margin-right:0.4rem;" onclick="App.openWebResearch(${item.id})">Web Search</button>
@@ -1562,7 +3407,7 @@ const App = {
     /**
      * Save a single AI report entry.
      */
-    addAIReport(type, title, content, status = 'success') {
+    addAIReport(type, title, content, status = 'success', suggestedActions = undefined) {
         if (!Array.isArray(this.storyData.aiReports)) {
             this.storyData.aiReports = [];
         }
@@ -1573,6 +3418,7 @@ const App = {
             title,
             content,
             status,
+            suggestedActions: Array.isArray(suggestedActions) ? suggestedActions : undefined,
             createdAt: new Date().toISOString()
         });
 
@@ -1779,6 +3625,7 @@ const App = {
     getTabDisplayName(tabName) {
         const labels = {
             dashboard: 'Dashboard',
+            templates: 'Templates',
             characters: 'Characters',
             timeline: 'Timeline',
             plot: 'Plot',
@@ -1865,8 +3712,17 @@ const App = {
         try {
             const result = await AIService.analyzeStory(this.storyData);
             if (result) {
-                this.addAIReport('story', '📊 Full Story Analysis', result, 'success');
-                runStatus.innerHTML = '<div class="ai-status connected">✅ Full story analysis saved to report history.</div>';
+                const parsed = this.parseAIJSON(result);
+                const suggested = (Array.isArray(parsed?.suggestedActions) ? parsed.suggestedActions : [])
+                    .map(a => ({
+                        ...a,
+                        isCanon: false,
+                        tags: Array.isArray(a?.tags) ? Array.from(new Set([...a.tags, 'draft'])) : ['draft']
+                    }));
+                this.addAIReport('story', '📊 Full Story Analysis', result, 'success', suggested);
+                runStatus.innerHTML = '<div class="ai-status connected">✅ Full story analysis saved. See Suggested Actions below.</div>';
+                this.suggestedActionsUI.selected = {};
+                this.renderAISuggestedActions();
             } else {
                 const message = 'Failed to get analysis. Check AI connection in settings.';
                 this.addAIReport('story', '📊 Full Story Analysis', message, 'error');
@@ -1876,6 +3732,242 @@ const App = {
             this.addAIReport('story', '📊 Full Story Analysis', `Error: ${error.message}`, 'error');
             runStatus.innerHTML = '<div class="ai-status disconnected">❌ Error: ' + error.message + '</div>';
         }
+    },
+
+    parseAIJSON(rawText) {
+        const raw = String(rawText || '').trim();
+        if (!raw) return null;
+        let cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+        const firstBrace = cleaned.indexOf('{');
+        const lastBrace = cleaned.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+        }
+        try {
+            return JSON.parse(cleaned);
+        } catch (e) {
+            return null;
+        }
+    },
+
+    getLatestStorySuggestedActions() {
+        const reports = Array.isArray(this.storyData.aiReports) ? this.storyData.aiReports : [];
+        const latest = reports.find(r => r && r.type === 'story' && r.status !== 'error');
+        const actions = Array.isArray(latest?.suggestedActions) ? latest.suggestedActions : [];
+        return actions.slice(0, 25);
+    },
+
+    toggleSuggestedActionSelection(idx, checked) {
+        this.suggestedActionsUI.selected[idx] = Boolean(checked);
+    },
+
+    promoteSelectedSuggestedActionsToCanon() {
+        const actions = this.getLatestStorySuggestedActions();
+        const selectedIdxs = Object.entries(this.suggestedActionsUI.selected)
+            .filter(([, v]) => v)
+            .map(([k]) => Number(k))
+            .filter(n => Number.isFinite(n));
+        if (selectedIdxs.length === 0) {
+            alert('Select at least one suggestion to promote.');
+            return;
+        }
+
+        const norm = (s) => String(s || '').trim().toLowerCase();
+        const eventsByTitle = new Map((this.storyData.events || []).map(e => [norm(e.title), e]));
+        const workByTitle = new Map((this.storyData.workItems || []).map(w => [norm(w.title), w]));
+        const charsByName = new Map((this.storyData.characters || []).map(c => [norm(c.name), c]));
+
+        let promoted = 0;
+        let skipped = 0;
+
+        selectedIdxs.forEach(idx => {
+            const a = actions[idx];
+            if (!a) return;
+            const type = this.normalizeSuggestedActionType(a.actionType);
+
+            if (type === 'timeline_event') {
+                const ev = eventsByTitle.get(norm(a.title));
+                if (ev) {
+                    ev.isCanon = true;
+                    promoted += 1;
+                } else {
+                    skipped += 1;
+                }
+                return;
+            }
+
+            if (type === 'work_item') {
+                const w = workByTitle.get(norm(a.title));
+                if (w) {
+                    w.isCanon = true;
+                    promoted += 1;
+                } else {
+                    skipped += 1;
+                }
+                return;
+            }
+
+            if (type === 'character_arc_update') {
+                const rel = Array.isArray(a.relatedTo) ? a.relatedTo : [];
+                const names = rel
+                    .filter(x => String(x).toLowerCase().startsWith('character:'))
+                    .map(x => String(x).split(':').slice(1).join(':').trim())
+                    .filter(Boolean);
+                if (names.length === 0) {
+                    skipped += 1;
+                    return;
+                }
+                let any = false;
+                names.forEach(n => {
+                    const c = charsByName.get(norm(n));
+                    if (c) {
+                        c.isCanon = true;
+                        any = true;
+                    }
+                });
+                if (any) promoted += 1; else skipped += 1;
+            }
+        });
+
+        StorageService.saveStoryData(this.storyData);
+        this.render();
+        alert(`Promoted ${promoted} item(s) to Canon. Skipped ${skipped} (missing corresponding items; add them first).`);
+    },
+
+    renderAISuggestedActions() {
+        const container = document.getElementById('aiSuggestedActions');
+        if (!container) return;
+        const actions = this.getLatestStorySuggestedActions();
+        if (actions.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+
+        container.innerHTML = `
+            <div class="ai-result suggestion" style="margin-top: 0.75rem;">
+                <div class="ai-header">
+                    <h3 style="margin: 0;">Suggested Actions</h3>
+                    <div style="display:flex; gap:0.5rem; flex-wrap: wrap;">
+                        <button style="background:#2563eb; font-size:0.85rem; padding:0.5rem 0.75rem;" onclick="App.applySuggestedActionsToTimeline()">Add as New Timeline Events</button>
+                        <button style="background:#16a34a; font-size:0.85rem; padding:0.5rem 0.75rem;" onclick="App.applySuggestedActionsToWorkItems()">Add as Work Items</button>
+                        <button style="background:#7c3aed; font-size:0.85rem; padding:0.5rem 0.75rem;" onclick="App.applySuggestedActionsToCharacterArcs()">Update Character Arcs</button>
+                        <button style="background:#d97706; font-size:0.85rem; padding:0.5rem 0.75rem;" onclick="App.promoteSelectedSuggestedActionsToCanon()">Promote selected to Canon</button>
+                    </div>
+                </div>
+                <div class="text-sm text-gray-600" style="margin-top:0.5rem;">Based on the latest Full Story Analysis. Buttons apply all matching suggestions (deduped).</div>
+                <div style="margin-top:0.75rem;">
+                    ${actions.map((a, idx) => `
+                        <div class="preview-item" style="border-bottom: 1px solid rgba(15, 23, 42, 0.06);">
+                            <input type="checkbox" onchange="App.toggleSuggestedActionSelection(${idx}, this.checked)">
+                            <div style="flex:1;">
+                                <div class="preview-item-title">${this.escapeHTML(String(a.title || 'Suggestion'))} <span class="preview-item-sub">(${this.escapeHTML(String(this.normalizeSuggestedActionType(a.actionType)))}, draft)</span></div>
+                                <div class="preview-item-sub">${this.escapeHTML(String(a.description || ''))}</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    },
+
+    normalizeSuggestedActionType(t) {
+        const x = String(t || '').trim().toLowerCase();
+        if (x.includes('timeline')) return 'timeline_event';
+        if (x.includes('work')) return 'work_item';
+        if (x.includes('arc') || x.includes('character')) return 'character_arc_update';
+        return x;
+    },
+
+    applySuggestedActionsToTimeline() {
+        const actions = this.getLatestStorySuggestedActions()
+            .filter(a => this.normalizeSuggestedActionType(a.actionType) === 'timeline_event');
+        if (actions.length === 0) return;
+
+        const existingTitles = new Set((this.storyData.events || []).map(e => String(e.title || '').trim().toLowerCase()));
+        let nextEventId = Math.max(...(this.storyData.events || []).map(e => e.id), 0) + 1;
+        let added = 0;
+
+        actions.forEach(a => {
+            const title = String(a.title || '').trim();
+            if (!title) return;
+            const key = title.toLowerCase();
+            if (existingTitles.has(key)) return;
+            this.storyData.events.push({
+                id: nextEventId++,
+                title,
+                period: '',
+                order: this.storyData.events.length,
+                beat: null,
+                description: String(a.description || '').trim(),
+                fullDescription: '',
+                involvedCharacterIds: []
+            });
+            existingTitles.add(key);
+            added += 1;
+        });
+
+        StorageService.saveStoryData(this.storyData);
+        this.renderTimelineWithCircle();
+        alert(`Added ${added} timeline event(s).`);
+    },
+
+    applySuggestedActionsToWorkItems() {
+        const actions = this.getLatestStorySuggestedActions()
+            .filter(a => this.normalizeSuggestedActionType(a.actionType) === 'work_item');
+        if (actions.length === 0) return;
+
+        const existing = new Set((this.storyData.workItems || []).map(w => String(w.title || '').trim().toLowerCase()));
+        let nextWorkId = Math.max(...(this.storyData.workItems || []).map(w => w.id), 0) + 1;
+        let added = 0;
+
+        actions.forEach(a => {
+            const title = String(a.title || '').trim();
+            if (!title) return;
+            const key = title.toLowerCase();
+            if (existing.has(key)) return;
+            this.storyData.workItems.push({
+                id: nextWorkId++,
+                title,
+                category: 'Scene Planning',
+                completed: false
+            });
+            existing.add(key);
+            added += 1;
+        });
+
+        StorageService.saveStoryData(this.storyData);
+        this.renderWorkItems();
+        alert(`Added ${added} work item(s).`);
+    },
+
+    applySuggestedActionsToCharacterArcs() {
+        const actions = this.getLatestStorySuggestedActions()
+            .filter(a => this.normalizeSuggestedActionType(a.actionType) === 'character_arc_update');
+        if (actions.length === 0) return;
+
+        const byName = new Map((this.storyData.characters || []).map(c => [String(c.name || '').trim().toLowerCase(), c]));
+        let updated = 0;
+        actions.forEach(a => {
+            const rel = Array.isArray(a.relatedTo) ? a.relatedTo : [];
+            const names = rel
+                .filter(x => String(x).toLowerCase().startsWith('character:'))
+                .map(x => String(x).split(':').slice(1).join(':').trim())
+                .filter(Boolean);
+            const desc = String(a.description || '').trim();
+            if (!desc) return;
+            (names.length ? names : []).forEach(n => {
+                const c = byName.get(n.toLowerCase());
+                if (!c) return;
+                const line = `Arc update: ${String(a.title || 'Suggestion').trim()} — ${desc}`;
+                if (!String(c.notes || '').toLowerCase().includes(line.toLowerCase())) {
+                    c.notes = c.notes ? `${c.notes}\n${line}` : line;
+                    updated += 1;
+                }
+            });
+        });
+        StorageService.saveStoryData(this.storyData);
+        this.renderCharacters();
+        alert(`Updated ${updated} character note(s) with arc suggestions.`);
     },
 
     /**
@@ -2109,11 +4201,178 @@ function createAISettingsModal() {
     document.getElementById('modalsContainer').innerHTML += html;
 }
 
+// Import Notes Modal
+function createImportNotesModal() {
+    const html = `
+        <div id="importNotesModal" class="ai-settings-modal">
+            <div class="ai-settings-content" style="max-width: 860px;">
+                <span class="modal-close" onclick="App.closeImportNotesModal()">&times;</span>
+                <h2>📝 Import Notes</h2>
+                <p class="text-gray-600 mb-4">Paste your story notes or upload a file. The local AI will extract structured items you can merge into your story.</p>
+
+                <div class="modal-tabs">
+                    <button id="importTabPaste" class="modal-tab active" onclick="App.setImportNotesTab('paste')">Paste Text</button>
+                    <button id="importTabUpload" class="modal-tab" onclick="App.setImportNotesTab('upload')">Upload File (.txt, .md)</button>
+                </div>
+
+                <div id="importPanePaste" style="margin-top: 0.75rem;">
+                    <label class="block text-sm font-medium mb-2">Paste notes</label>
+                    <textarea id="importNotesPaste" class="form-input" rows="8" placeholder="Paste your notes here..." oninput="App.onImportNotesPasteChange(this.value)"></textarea>
+                </div>
+
+                <div id="importPaneUpload" style="display:none; margin-top: 0.75rem;">
+                    <label class="block text-sm font-medium mb-2">Upload a .txt or .md file</label>
+                    <input type="file" class="form-input" accept=".txt,.md,text/plain,text/markdown" onchange="App.onImportNotesFileSelected(this.files?.[0] || null)">
+                    <div class="text-sm text-gray-600" style="margin-top:0.4rem;">After upload, you’ll be returned to Paste Text with the file contents loaded.</div>
+                </div>
+
+                <div style="display:flex; gap:0.6rem; flex-wrap: wrap; margin-top: 0.9rem;">
+                    <button class="ai-btn" onclick="App.extractFromNotes()">✨ Extract with AI</button>
+                    <button style="background:#16a34a;" onclick="App.addImportedToStory()">✅ Add to Story</button>
+                    <button class="topbar-ghost" onclick="App.closeImportNotesModal()">Cancel</button>
+                </div>
+
+                <div id="importNotesStatus" style="margin-top: 0.75rem;"></div>
+                <div id="importPreview" style="margin-top: 0.75rem;"></div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+// Analyze & Import (Dashboard) comparison modal
+function createAnalyzeImportModal() {
+    const html = `
+        <div id="analyzeImportModal" class="ai-settings-modal">
+            <div class="ai-settings-content" style="max-width: 980px;">
+                <span class="modal-close" onclick="App.closeAnalyzeImportModal()">&times;</span>
+                <h2>✨ Analyze & Import</h2>
+                <p class="text-gray-600 mb-4">Review suggestions side-by-side with your current story. Uncheck anything you don’t want to add.</p>
+
+                <div style="display:flex; gap:0.6rem; flex-wrap: wrap;">
+                    <button style="background:#16a34a;" onclick="App.applyDashboardSuggestions()">✅ Add Accepted Items</button>
+                    <button class="topbar-ghost" onclick="App.closeAnalyzeImportModal()">Close</button>
+                </div>
+
+                <div id="analyzeImportCompare" style="margin-top: 0.85rem;"></div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+// Relationship link modal (drag character onto character)
+function createRelationshipModal() {
+    const html = `
+        <div id="relationshipModal" class="event-editor-modal">
+            <div class="event-editor-content" style="max-width: 720px;">
+                <span class="modal-close" onclick="App.closeRelationshipModal()">&times;</span>
+                <h2>Create Relationship</h2>
+                <div class="ai-result" style="margin-top: 0.75rem;">
+                    <strong id="relFromName">Character A</strong>
+                    <span style="margin: 0 0.4rem;">↔</span>
+                    <strong id="relToName">Character B</strong>
+                    <div class="text-sm text-gray-600" style="margin-top: 0.35rem;">This will link them as related characters. Optionally add type + notes.</div>
+                </div>
+
+                <div style="margin-top: 0.75rem;">
+                    <label class="block text-sm font-medium mb-2">Relationship Type</label>
+                    <select id="relType" class="form-input">
+                        <option value="ally">Ally</option>
+                        <option value="enemy">Enemy</option>
+                        <option value="family">Family</option>
+                        <option value="romance">Romance</option>
+                        <option value="mentor">Mentor</option>
+                        <option value="rival">Rival</option>
+                        <option value="other" selected>Other</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Notes (optional)</label>
+                    <textarea id="relNotes" class="form-input" rows="4" placeholder="Short relationship notes..."></textarea>
+                </div>
+
+                <div style="display:flex; gap:0.6rem; flex-wrap: wrap; margin-top: 0.75rem;">
+                    <button style="background:#16a34a;" onclick="App.confirmRelationshipLink()">✅ Link Characters</button>
+                    <button class="topbar-ghost" onclick="App.closeRelationshipModal()">Cancel</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+// Command palette modal
+function createCommandPaletteModal() {
+    const html = `
+        <div id="commandPaletteModal" class="ai-settings-modal">
+            <div class="ai-settings-content" style="max-width: 720px;">
+                <span class="modal-close" onclick="App.closeCommandPalette()">&times;</span>
+                <h2>⌘ Command Palette</h2>
+                <p class="text-gray-600 mb-4">Type to filter, Enter to run. (Cmd/Ctrl+K)</p>
+                <input id="commandPaletteInput" class="form-input" placeholder="Search commands..." oninput="App.onCommandPaletteQuery(this.value)" onkeydown="App.onCommandPaletteKeydown(event)">
+                <div id="commandPaletteList" style="margin-top:0.75rem;"></div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+// Canon confirm modal
+function createCanonConfirmModal() {
+    const html = `
+        <div id="canonConfirmModal" class="event-editor-modal">
+            <div class="event-editor-content" style="max-width: 620px;">
+                <span class="modal-close" onclick="App.closeCanonConfirmModal()">&times;</span>
+                <h2 id="canonModalTitle">Mark as Canon?</h2>
+                <div class="ai-result" style="margin-top:0.75rem;">
+                    <div id="canonModalBody">Marking as Canon protects this item from deletion and prevents AI imports from overwriting it.</div>
+                </div>
+                <div style="display:flex; gap:0.6rem; flex-wrap: wrap; margin-top: 0.75rem;">
+                    <button id="canonModalActionBtn" style="background:#d97706;" onclick="App.confirmToggleCanon()">Mark as Canon</button>
+                    <button class="topbar-ghost" onclick="App.closeCanonConfirmModal()">Cancel</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+// Draft merge modal
+function createDraftMergeModal() {
+    const html = `
+        <div id="draftMergeModal" class="event-editor-modal">
+            <div class="event-editor-content" style="max-width: 720px;">
+                <span class="modal-close" onclick="App.closeMergeDraftModal()">&times;</span>
+                <h2 id="draftMergeTitle">Merge Draft → Canon</h2>
+                <div class="ai-result" style="margin-top:0.75rem;">
+                    <div id="draftMergeBody">Select the canon item to merge into.</div>
+                </div>
+                <div style="margin-top:0.75rem;">
+                    <label class="block text-sm font-medium mb-2">Canon target</label>
+                    <select id="draftMergeTargetSelect" class="form-input"></select>
+                </div>
+                <div style="display:flex; gap:0.6rem; flex-wrap: wrap; margin-top: 0.75rem;">
+                    <button style="background:#2563eb;" onclick="App.confirmMergeDraft()">Merge & Delete Draft</button>
+                    <button class="topbar-ghost" onclick="App.closeMergeDraftModal()">Cancel</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
 // Initialize modals and app
 createCharacterSelectorModal();
 createCharacterEditorModal();
 createEventEditorModal();
 createAISettingsModal();
+createImportNotesModal();
+createAnalyzeImportModal();
+createRelationshipModal();
+createCommandPaletteModal();
+createCanonConfirmModal();
+createDraftMergeModal();
 
 // Start the application
 App.init();
