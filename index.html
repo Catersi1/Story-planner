@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>C Drama Story Planner - AI Enhanced</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="topbar">
+            <div class="topbar-title">
+                <div class="topbar-title-row">
+                    <div class="app-mark">📖</div>
+                    <div>
+                        <div class="app-name">C Drama Story Planner</div>
+                        <div class="app-subtitle">Characters • Beats • Plot • Politics • Visual Storyboard</div>
+                    </div>
+                </div>
+            </div>
+            <div class="topbar-actions">
+                <button class="topbar-cta" onclick="App.switchTab('master-document')">Open Master Document</button>
+                <button class="topbar-ghost" id="themeToggleBtn" onclick="App.toggleTheme()" title="Toggle dark mode">Dark</button>
+                <button class="topbar-ghost" onclick="App.switchTab('ai-settings')">AI Settings</button>
+            </div>
+        </header>
+
+        <aside class="sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-label">Navigate</div>
+                <button class="tab-button active" onclick="App.switchTab('dashboard')">🏠 Dashboard</button>
+                <button class="tab-button" onclick="App.switchTab('characters')">👥 Characters</button>
+                <button class="tab-button" onclick="App.switchTab('timeline')">🗓️ Timeline</button>
+                <button class="tab-button" onclick="App.switchTab('plot')">📖 Plot</button>
+                <button class="tab-button" onclick="App.switchTab('politics')">🏛️ Politics</button>
+                <button class="tab-button" onclick="App.switchTab('workitems')">✅ Work Items</button>
+            </div>
+            <div class="sidebar-section">
+                <div class="sidebar-label">AI + Outputs</div>
+                <button class="tab-button" onclick="App.switchTab('master-document')">📜 Master Document</button>
+                <button class="tab-button" onclick="App.switchTab('visualizer')">🎬 Visualizer</button>
+                <button class="tab-button" onclick="App.switchTab('ai-actions')">🚨 Action Items</button>
+                <button class="tab-button" onclick="App.switchTab('ai-settings')">⚙️ Settings</button>
+            </div>
+            <div class="sidebar-hint">
+                Tip: start with <strong>Timeline</strong>, then generate prompts in <strong>Visualizer</strong>.
+            </div>
+        </aside>
+
+        <nav class="mobile-tabbar" aria-label="Tabs">
+            <button class="tab-button active" onclick="App.switchTab('dashboard')"><span class="mobile-tab-icon">🏠</span><span class="mobile-tab-label">Home</span></button>
+            <button class="tab-button" onclick="App.switchTab('characters')"><span class="mobile-tab-icon">👥</span><span class="mobile-tab-label">Characters</span></button>
+            <button class="tab-button" onclick="App.switchTab('timeline')"><span class="mobile-tab-icon">🗓️</span><span class="mobile-tab-label">Timeline</span></button>
+            <button class="tab-button" onclick="App.switchTab('workitems')"><span class="mobile-tab-icon">✅</span><span class="mobile-tab-label">Tasks</span></button>
+            <button class="tab-button" onclick="App.switchTab('visualizer')"><span class="mobile-tab-icon">🎬</span><span class="mobile-tab-label">Visuals</span></button>
+            <button class="tab-button" onclick="App.switchTab('master-document')"><span class="mobile-tab-icon">📜</span><span class="mobile-tab-label">Master</span></button>
+        </nav>
+
+        <main class="main">
+            <div class="content">
+
+        <!-- DASHBOARD TAB -->
+        <div id="dashboard" class="tab-content active">
+            <div id="aiStatusIndicator"></div>
+            <div class="dashboard-grid">
+                <div class="stat-card" style="border-top: 4px solid #3b82f6;">
+                    <div class="stat-number" id="character-count">0</div>
+                    <div class="stat-label">Characters</div>
+                </div>
+                <div class="stat-card" style="border-top: 4px solid #a855f7;">
+                    <div class="stat-number" id="event-count">0</div>
+                    <div class="stat-label">Timeline Events</div>
+                </div>
+                <div class="stat-card" style="border-top: 4px solid #22c55e;">
+                    <div class="stat-number" id="task-count">0</div>
+                    <div class="stat-label">Work Items</div>
+                </div>
+                <div class="stat-card" style="border-top: 4px solid #f59e0b;">
+                    <div class="stat-number" id="friendly-count">0</div>
+                    <div class="stat-label">Friendly Characters</div>
+                </div>
+                <div class="stat-card" style="border-top: 4px solid #ef4444;">
+                    <div class="stat-number" id="antagonist-count">0</div>
+                    <div class="stat-label">Antagonists</div>
+                </div>
+                <div class="stat-card" style="border-top: 4px solid #6b7280;">
+                    <div class="stat-number" id="gray-count">0</div>
+                    <div class="stat-label">Gray Area Characters</div>
+                </div>
+            </div>
+            <div class="card">
+                <h2>Story Completion Status</h2>
+                <div style="margin: 1.5rem 0;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                        <span>Work Items Completed</span>
+                        <span id="completion-percentage">0%</span>
+                    </div>
+                    <div style="background: #e5e7eb; border-radius: 0.5rem; height: 24px; overflow: hidden;">
+                        <div id="completion-bar" style="background: linear-gradient(90deg, #3b82f6 0%, #a855f7 100%); height: 100%; width: 0%; transition: width 0.3s;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <h2>Quick Actions</h2>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem;">
+                    <button onclick="App.switchTab('characters')">➕ Add Character</button>
+                    <button class="ai-btn" onclick="App.switchTab('timeline')">🗓️ Add Timeline Event</button>
+                    <button onclick="App.switchTab('workitems')" style="background: linear-gradient(90deg, #16a34a, #06b6d4); border-color: rgba(22, 163, 74, 0.25);">✅ Add Work Item</button>
+                    <button class="topbar-ghost" onclick="App.switchTab('ai-settings')">⚙️ Configure AI</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="ai-header">
+                    <h2 style="margin: 0;">🤖 AI Story Analysis</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Run local AI analysis directly from your dashboard.</p>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
+                    <button class="ai-btn" onclick="App.analyzeStory()">📊 Full Story Analysis</button>
+                    <button class="ai-btn" onclick="App.analyzeContinuity()">🔗 Check Continuity</button>
+                    <button class="ai-btn" onclick="App.analyzeCharacters()">👥 Character Development</button>
+                    <button class="ai-btn" onclick="App.analyzePlot()">📖 Plot Structure</button>
+                </div>
+                <div id="aiRunStatus"></div>
+                <div id="aiActionQueue"></div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin: 1rem 0;">
+                    <h3 style="margin: 0;">Saved Reports</h3>
+                    <button onclick="App.clearAIReports()" style="background: #ef4444; font-size: 0.875rem; padding: 0.5rem 0.75rem;">Clear Reports</button>
+                </div>
+                <div id="aiResultsContainer"></div>
+            </div>
+        </div>
+
+        <!-- CHARACTERS TAB -->
+        <div id="characters" class="tab-content">
+            <div class="card">
+                <h2>Add New Character</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Character Name</label>
+                        <input type="text" id="newCharName" class="form-input" placeholder="e.g., Li Wei">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Age</label>
+                        <input type="number" id="newCharAge" class="form-input" placeholder="e.g., 28">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Role</label>
+                        <input type="text" id="newCharRole" class="form-input" placeholder="e.g., Scientist, Prince">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Character Type</label>
+                        <select id="newCharType" class="form-input">
+                            <option value="friendly">🟢 Friendly</option>
+                            <option value="antagonist">🔴 Antagonist</option>
+                            <option value="gray">⚪ Gray Area</option>
+                        </select>
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-sm font-medium mb-2">Background</label>
+                        <textarea id="newCharBackground" class="form-input" placeholder="Character's backstory..." rows="2"></textarea>
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-sm font-medium mb-2">Personality</label>
+                        <textarea id="newCharPersonality" class="form-input" placeholder="Key personality traits..." rows="2"></textarea>
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-sm font-medium mb-2">Notes</label>
+                        <textarea id="newCharNotes" class="form-input" placeholder="Additional notes..." rows="2"></textarea>
+                    </div>
+                </div>
+                <button onclick="App.addCharacter()" class="mt-4">+ Add Character</button>
+            </div>
+            <div>
+                <input type="text" id="characterSearch" class="search-box" placeholder="Search characters...">
+                <div id="charactersContainer"></div>
+            </div>
+        </div>
+
+        <!-- TIMELINE TAB -->
+        <div id="timeline" class="tab-content">
+            <div class="card">
+                <h2>Dan Harmon's Story Circle</h2>
+                <p class="text-gray-600 mb-4">Click on events to view and edit details.</p>
+                <div class="story-circle">
+                    <svg viewBox="0 0 600 600" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="300" cy="300" r="280" fill="none" stroke="#e5e7eb" stroke-width="2"/>
+                        <line x1="20" y1="300" x2="580" y2="300" stroke="#d1d5db" stroke-width="2"/>
+                        <line x1="300" y1="20" x2="300" y2="580" stroke="#d1d5db" stroke-width="2"/>
+                        <circle cx="300" cy="300" r="100" fill="#f9fafb" stroke="#d1d5db" stroke-width="2"/>
+                        <text x="300" y="285" class="story-beat-label" font-size="18" font-weight="bold">Order</text>
+                        <text x="300" y="320" class="story-beat-label" font-size="18" font-weight="bold">Chaos</text>
+                        <path d="M 300 30 A 270 270 0 0 0 109.81 109.81" fill="#fef08a" stroke="#eab308" stroke-width="2"/>
+                        <text x="160" y="65" class="story-beat-label" font-size="14">1. You</text>
+                        <text x="160" y="85" class="story-beat-description">(establish protagonist)</text>
+                        <path d="M 109.81 109.81 A 270 270 0 0 0 30 300" fill="#a5f3fc" stroke="#06b6d4" stroke-width="2"/>
+                        <text x="70" y="200" class="story-beat-label" font-size="14">2. Need</text>
+                        <text x="70" y="220" class="story-beat-description">(something isn't right)</text>
+                        <path d="M 30 300 A 270 270 0 0 0 109.81 490.19" fill="#a5f3fc" stroke="#06b6d4" stroke-width="2"/>
+                        <text x="70" y="380" class="story-beat-label" font-size="14">3. Go!</text>
+                        <text x="70" y="400" class="story-beat-description">(crossing threshold)</text>
+                        <path d="M 109.81 490.19 A 270 270 0 0 0 300 570" fill="#fed7aa" stroke="#fb923c" stroke-width="2"/>
+                        <text x="170" y="520" class="story-beat-label" font-size="14">4. Search</text>
+                        <text x="170" y="540" class="story-beat-description">(road of trials)</text>
+                        <path d="M 300 570 A 270 270 0 0 0 490.19 490.19" fill="#fef08a" stroke="#eab308" stroke-width="2"/>
+                        <text x="420" y="540" class="story-beat-label" font-size="14">5. Find</text>
+                        <text x="420" y="560" class="story-beat-description">(meeting goddess)</text>
+                        <path d="M 490.19 490.19 A 270 270 0 0 0 570 300" fill="#2dd4bf" stroke="#14b8a6" stroke-width="2"/>
+                        <text x="510" y="400" class="story-beat-label" font-size="14">6. Take</text>
+                        <text x="510" y="420" class="story-beat-description">(paying the price)</text>
+                        <path d="M 570 300 A 270 270 0 0 0 490.19 109.81" fill="#2dd4bf" stroke="#14b8a6" stroke-width="2"/>
+                        <text x="510" y="200" class="story-beat-label" font-size="14">7. Return</text>
+                        <text x="510" y="220" class="story-beat-description">(bringing it home)</text>
+                        <path d="M 490.19 109.81 A 270 270 0 0 0 300 30" fill="#e5e7eb" stroke="#9ca3af" stroke-width="2"/>
+                        <text x="380" y="65" class="story-beat-label" font-size="14">8. Change</text>
+                        <text x="380" y="85" class="story-beat-description">(master of both)</text>
+                    </svg>
+                    <div id="eventsOnCircle"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="ai-header">
+                    <h2 style="margin: 0;">🧭 Hero’s Journey (Alternative Structure)</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Use this structure if you prefer it over Dan Harmon’s circle.</p>
+                <img
+                    src="assets/heros_journey-768x759-63800efc-abdb-44c7-8117-226cccd6fdaf.png"
+                    alt="Hero's Journey story structure"
+                    class="story-structure-image"
+                />
+            </div>
+            <div class="card">
+                <h2>Timeline Events</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Event Title</label>
+                        <input type="text" id="newEventTitle" class="form-input" placeholder="e.g., Time Travel">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Period / Act</label>
+                        <input type="text" id="newEventPeriod" class="form-input" placeholder="e.g., Act 1">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Story Circle Beat (Optional)</label>
+                        <select id="newEventBeat" class="form-input">
+                            <option value="">-- No beat assigned --</option>
+                            <option value="1">1. You (establish protagonist)</option>
+                            <option value="2">2. Need (something isn't right)</option>
+                            <option value="3">3. Go! (crossing the threshold)</option>
+                            <option value="4">4. Search (road of trials)</option>
+                            <option value="5">5. Find (meeting the goddess)</option>
+                            <option value="6">6. Take (paying the price)</option>
+                            <option value="7">7. Return (bringing it home)</option>
+                            <option value="8">8. Change (master of both worlds)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Description</label>
+                        <textarea id="newEventDescription" class="form-input" placeholder="Event details..." rows="2"></textarea>
+                    </div>
+                </div>
+                <button onclick="App.addEvent()" class="mt-2">+ Add Event</button>
+            </div>
+            <div id="timelineContainer"></div>
+        </div>
+
+        <!-- PLOT TAB -->
+        <div id="plot" class="tab-content">
+            <div id="plotContainer"></div>
+        </div>
+
+        <!-- POLITICS TAB -->
+        <div id="politics" class="tab-content">
+            <div id="politicsContainer"></div>
+        </div>
+
+        <!-- WORK ITEMS TAB -->
+        <div id="workitems" class="tab-content">
+            <div class="card">
+                <h2>Add Work Item</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <input type="text" id="newWorkTitle" class="form-input" placeholder="Task title...">
+                    <select id="newWorkCategory" class="form-input">
+                        <option value="Historical Research">Historical Research</option>
+                        <option value="Character Development">Character Development</option>
+                        <option value="Plot Holes">Plot Holes</option>
+                        <option value="Worldbuilding">Worldbuilding</option>
+                        <option value="Dialogue">Dialogue</option>
+                        <option value="Scene Planning">Scene Planning</option>
+                    </select>
+                </div>
+                <button onclick="App.addWorkItem()" class="mt-2">+ Add Work Item</button>
+            </div>
+            <div id="workitemsContainer"></div>
+        </div>
+
+        <!-- MASTER DOCUMENT TAB -->
+        <div id="master-document" class="tab-content">
+            <div class="card">
+                <div class="ai-header">
+                    <h2 style="margin: 0;">📜 Master Document</h2>
+                    <div style="display:flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <button style="background:#2563eb; font-size: 0.875rem; padding: 0.5rem 0.75rem;" onclick="App.regenerateMasterDocument()">Regenerate</button>
+                        <button style="background:#16a34a; font-size: 0.875rem; padding: 0.5rem 0.75rem;" onclick="App.copyMasterDocument()">Copy</button>
+                        <button style="background:#4b5563; font-size: 0.875rem; padding: 0.5rem 0.75rem;" onclick="App.downloadMasterDocument()">Download .md</button>
+                    </div>
+                </div>
+                <p class="text-gray-600 mb-4">
+                    This is an auto-updated master script that tracks your story architecture (characters, beats, outline, politics)
+                    and progress (work items + gaps). It updates whenever you save changes.
+                </p>
+                <div id="masterDocumentMeta" class="text-sm text-gray-600" style="margin-bottom: 0.75rem;"></div>
+                <textarea id="masterDocumentText" class="form-input" rows="26" readonly style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; white-space: pre; line-height: 1.35;"></textarea>
+                <div id="masterDocumentStatus" style="margin-top: 0.75rem;"></div>
+            </div>
+        </div>
+
+        <!-- AI VISUALIZER TAB -->
+        <div id="visualizer" class="tab-content">
+            <div class="card">
+                <div class="ai-header">
+                    <h2 style="margin: 0;">🧩 Visual Storyboard Builder</h2>
+                    <div style="display:flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <button class="ai-btn" style="padding: 0.55rem 0.85rem; font-size: 0.9rem;" onclick="App.syncStoryboardFromTimeline()">Sync from Timeline</button>
+                        <button style="background:#4b5563; padding: 0.55rem 0.85rem; font-size: 0.9rem;" onclick="App.clearStoryboard()">Clear</button>
+                    </div>
+                </div>
+                <p class="text-gray-600 mb-4">
+                    Generates one prompt per Timeline event for external image generators. Paste image URLs or paste/upload images back into each scene.
+                </p>
+                <div id="storyboardStatus"></div>
+                <div id="storyboardContainer"></div>
+            </div>
+            <div class="card">
+                <div class="ai-header">
+                    <h2 style="margin: 0;">🎬 Story Visualizer</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Generate scene images from timeline events, plot outline, or both to preview your story visually.</p>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Source</label>
+                        <select id="visualSource" class="form-input">
+                            <option value="both">Timeline + Plot</option>
+                            <option value="timeline">Timeline Only</option>
+                            <option value="plot">Plot Only</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Scene Count</label>
+                        <select id="visualCount" class="form-input">
+                            <option value="3">3 scenes</option>
+                            <option value="4" selected>4 scenes</option>
+                            <option value="6">6 scenes</option>
+                            <option value="8">8 scenes</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Visual Style</label>
+                        <input id="visualStyle" class="form-input" placeholder="cinematic, Tang Dynasty, dramatic lighting">
+                    </div>
+                </div>
+                <button class="ai-btn" onclick="App.generateStoryVisuals()">🖼️ Generate Visual Storyboard</button>
+                <div id="visualizerStatus" style="margin-top: 1rem;"></div>
+            </div>
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="margin:0;">Generated Visual Scenes</h3>
+                    <button onclick="App.clearVisuals()" style="background:#ef4444;font-size:0.875rem;padding:0.5rem 0.75rem;">Clear Visuals</button>
+                </div>
+                <div id="visualGallery"></div>
+            </div>
+        </div>
+
+        <!-- AI ACTION ITEMS TAB -->
+        <div id="ai-actions" class="tab-content">
+            <div class="card">
+                <div class="ai-header">
+                    <h2 style="margin: 0;">🚨 AI Action Items</h2>
+                    <button onclick="App.switchTab('dashboard')" style="background: #2563eb;">Back to Dashboard</button>
+                </div>
+                <p class="text-gray-600 mb-4">Priority issues extracted from AI reports. Work from here without rereading full reports.</p>
+                <div id="aiActionItemsContainer"></div>
+            </div>
+        </div>
+
+        <!-- AI SETTINGS TAB -->
+        <div id="ai-settings" class="tab-content">
+            <div class="card">
+                <div class="ai-header">
+                    <h2 style="margin: 0;">⚙️ AI Settings</h2>
+                    <button class="settings-btn" onclick="App.openAISettings()">⚙️ Settings</button>
+                </div>
+                <div id="aiStatusIndicatorSettings"></div>
+                <p class="text-gray-600 mb-4">Configure LM Studio or Ollama connection details and models.</p>
+                <button class="ai-btn" onclick="App.openAISettings()">Open AI Configuration</button>
+            </div>
+        </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals will be inserted here by JavaScript -->
+    <div id="modalsContainer"></div>
+
+    <!-- Scripts -->
+    <script src="js/storage.js"></script>
+    <script src="js/ai-service.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

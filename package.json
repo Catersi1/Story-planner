@@ -1,0 +1,13 @@
+{
+  "name": "c-drama-story-planner",
+  "version": "1.0.0",
+  "description": "AI-Enhanced Story Planner for C Drama Development",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx http-server -p 8080 -o",
+    "dev": "npx http-server -p 8080"
+  },
+  "keywords": ["story-planning", "writing", "ai"],
+  "author": "",
+  "license": "MIT"
+}
