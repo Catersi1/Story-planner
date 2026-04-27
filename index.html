@@ -11,6 +11,9 @@
         };
     </script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+    <!-- Import notes: .docx / .pdf text extraction (App.readImportNotesFileAsText) -->
+    <script src="https://cdn.jsdelivr.net/npm/mammoth@1.11.0/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <link rel="stylesheet" href="css/styles.css">
 </head>
 <body data-theme="dark" class="min-h-screen bg-[#09090b] text-zinc-100 antialiased">
@@ -27,7 +30,7 @@
             </div>
             <div class="topbar-actions">
                 <button class="rounded-xl bg-violet-600 px-4 py-2 text-sm font-extrabold text-white shadow-lg shadow-violet-950/30 hover:bg-violet-700" onclick="App.switchTab('master-document')">Open Master Document</button>
-                <button class="rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-extrabold text-white shadow-lg shadow-violet-950/30 hover:bg-violet-700" onclick="App.openStorySetupWizard()" title="Build story context with Dan Harmon’s Story Circle">Start Story Setup Wizard</button>
+                <button class="rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-extrabold text-white shadow-lg shadow-violet-950/30 hover:bg-violet-700" onclick="App.openStorySetupWizard()" title="Open the Story Wizard (Dan Harmon’s Story Circle)">Start Story Wizard</button>
                 <button class="rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-sm font-extrabold text-zinc-100 hover:bg-zinc-800/70" id="themeToggleBtn" onclick="App.toggleTheme()" title="Toggle theme">Light</button>
                 <button class="rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-sm font-extrabold text-zinc-100 hover:bg-zinc-800/70" onclick="App.switchTab('ai-settings')">AI Settings</button>
             </div>

@@ -16,6 +16,26 @@ import {
 import { AIService } from './ai-service.js';
 import { TAB_RENDERERS } from './components/tabs.js';
 
+/** Campbell/Vogler — ids match `event.heroJourney` ('1'…'12'). */
+const HERO_JOURNEY_STEPS = [
+    { id: '1', short: 'Ordinary World', abbr: 'Ordinary' },
+    { id: '2', short: 'Call to Adventure', abbr: 'Call' },
+    { id: '3', short: 'Refusal of the Call', abbr: 'Refusal' },
+    { id: '4', short: 'Meeting the Mentor', abbr: 'Mentor' },
+    { id: '5', short: 'Crossing the Threshold', abbr: 'Threshold' },
+    { id: '6', short: 'Tests, Allies, Enemies', abbr: 'Tests' },
+    { id: '7', short: 'Approach to the Inmost Cave', abbr: 'Approach' },
+    { id: '8', short: 'Ordeal', abbr: 'Ordeal' },
+    { id: '9', short: 'Reward', abbr: 'Reward' },
+    { id: '10', short: 'The Road Back', abbr: 'Road back' },
+    { id: '11', short: 'Resurrection', abbr: 'Resurrection' },
+    { id: '12', short: 'Return with the Elixir', abbr: 'Elixir' }
+];
+
+const TIMELINE_SHAPE_KINDS = ['circle', 'rounded', 'square', 'diamond'];
+
+const STORY_WIZARD_DRAFT_KEY = 'cdrama_story_wizard_draft_v1';
+
 const App = {
     storyData: StorageService.loadStoryData(),
     currentEditingEventId: null,
@@ -72,14 +92,15 @@ const App = {
         }
     },
 
-    // ============ STORY SETUP WIZARD (DAN HARMON STORY CIRCLE) ============
+    // ============ STORY WIZARD (DAN HARMON STORY CIRCLE) ============
 
     storySetupWizard: {
         open: false,
         running: false,
         phase: 'intro', // intro | questions | followups | review | committed
         baseIndex: 0,
-        baseAnswers: [], // [{ id, label, answer }]
+        /** Per Story Circle question id (e.g. 1_you) — allows prefill, edit, skip */
+        answerById: {},
         followUpQuestions: [],
         followUpAnswers: [], // [{ question, answer }]
         followupHistory: [],
@@ -106,23 +127,180 @@ const App = {
     },
 
     openStorySetupWizard() {
-        this.storySetupWizard.open = true;
-        this.storySetupWizard.running = false;
-        this.storySetupWizard.phase = 'intro';
-        this.storySetupWizard.baseIndex = 0;
-        this.storySetupWizard.baseAnswers = [];
-        this.storySetupWizard.followUpQuestions = [];
-        this.storySetupWizard.followUpAnswers = [];
-        this.storySetupWizard.followupHistory = [];
-        this.storySetupWizard.lastAI = { raw: '', mode: null, payload: null, questions: [] };
-        this.storySetupWizard.staged = { characters: [], timelineBeats: [], relationships: [], workItems: [] };
-        this.storySetupWizard.preview = { summary: '' };
-        this.storySetupWizard.editMode = false;
-        this.storySetupWizard.editedJson = '';
+        const st = this.storySetupWizard;
+        st.open = true;
+        st.running = false;
+        st.phase = 'intro';
+        st.followUpQuestions = [];
+        st.followUpAnswers = [];
+        st.followupHistory = [];
+        st.lastAI = { raw: '', mode: null, payload: null, questions: [] };
+        st.staged = { characters: [], timelineBeats: [], relationships: [], workItems: [] };
+        st.preview = { summary: '' };
+        st.editMode = false;
+        st.editedJson = '';
+
+        const seeds = this.buildWizardAnswerSeedsFromStory();
+        let draft = null;
+        try {
+            draft = JSON.parse(localStorage.getItem(STORY_WIZARD_DRAFT_KEY) || 'null');
+        } catch {
+            draft = null;
+        }
+        const draftAnswers = draft && typeof draft.answerById === 'object' ? draft.answerById : {};
+        st.answerById = { ...seeds, ...draftAnswers };
+        if (typeof draft?.baseIndex === 'number' && draft.baseIndex >= 0 && draft.baseIndex <= 8) {
+            st.baseIndex = draft.baseIndex;
+        } else {
+            st.baseIndex = this.computeWizardFirstIncompleteIndex(st.answerById);
+        }
 
         document.getElementById('storySetupWizardModal')?.classList.add('active');
         this.renderStorySetupWizardModal();
         setTimeout(() => document.getElementById('storySetupWizardAnswer')?.focus(), 0);
+    },
+
+    saveStorySetupWizardDraft() {
+        const st = this.storySetupWizard;
+        try {
+            localStorage.setItem(
+                STORY_WIZARD_DRAFT_KEY,
+                JSON.stringify({
+                    answerById: st.answerById,
+                    baseIndex: st.baseIndex,
+                    savedAt: Date.now()
+                })
+            );
+        } catch {
+            /* ignore quota */
+        }
+    },
+
+    clearStorySetupWizardDraft() {
+        try {
+            localStorage.removeItem(STORY_WIZARD_DRAFT_KEY);
+        } catch {
+            /* ignore */
+        }
+    },
+
+    computeWizardFirstIncompleteIndex(answerById) {
+        const qs = this.storyCircleQuestions();
+        for (let i = 0; i < qs.length; i++) {
+            if (!String(answerById?.[qs[i].id] || '').trim()) return i;
+        }
+        return qs.length;
+    },
+
+    /**
+     * Suggested text per Story Circle id from current story data (characters, beats, tasks, relationships).
+     */
+    buildWizardAnswerSeedsFromStory() {
+        const out = {};
+        const chars = Array.isArray(this.storyData?.characters) ? this.storyData.characters : [];
+        const events = Array.isArray(this.storyData?.events) ? this.storyData.events : [];
+        const rels = Array.isArray(this.storyData?.relationships) ? this.storyData.relationships : [];
+        const workItems = Array.isArray(this.storyData?.workItems) ? this.storyData.workItems : [];
+
+        const canonicalChars = chars.filter((c) => c && c.isCanon);
+        const protagonist = canonicalChars[0] || chars[0] || null;
+        if (protagonist) {
+            out['1_you'] = [
+                `${protagonist.name || 'Protagonist'} is the current protagonist focus.`,
+                protagonist.role ? `Role: ${protagonist.role}.` : '',
+                protagonist.description ? protagonist.description : protagonist.background || ''
+            ]
+                .filter(Boolean)
+                .join(' ')
+                .trim();
+            out['2_need'] = protagonist.personality
+                ? `Likely deep need inferred from personality notes: ${protagonist.personality}`
+                : protagonist.notes
+                    ? `Likely deep need inferred from notes: ${protagonist.notes}`
+                    : '';
+        }
+
+        const firstEventByBeat = new Map();
+        events.forEach((event) => {
+            const beat = String(event?.beat || '').trim();
+            if (!beat || firstEventByBeat.has(beat)) return;
+            firstEventByBeat.set(beat, event);
+        });
+        const mapBeatToQuestion = {
+            '3': '3_go',
+            '4': '4_search',
+            '5': '5_find',
+            '6': '6_take',
+            '7': '7_return',
+            '8': '8_change'
+        };
+        Object.entries(mapBeatToQuestion).forEach(([beat, questionId]) => {
+            const event = firstEventByBeat.get(beat);
+            if (!event) return;
+            out[questionId] = [
+                event.title ? `Existing beat ${beat}: ${event.title}.` : '',
+                event.description ? event.description : '',
+                event.location ? `Location: ${event.location}.` : ''
+            ]
+                .filter(Boolean)
+                .join(' ')
+                .trim();
+        });
+
+        if (!out['4_search']) {
+            const openTasks = workItems
+                .filter((w) => w && !w.completed)
+                .slice(0, 3)
+                .map((w) => String(w.title || '').trim())
+                .filter(Boolean);
+            if (openTasks.length) out['4_search'] = `Current unresolved trials/tasks: ${openTasks.join('; ')}.`;
+        }
+
+        if (!out['8_change']) {
+            const relHints = rels
+                .slice(0, 3)
+                .map(
+                    (r) =>
+                        `${r.from || r.fromName || 'Character'} → ${r.to || r.toName || 'Character'} (${r.type || 'relationship'})`
+                );
+            if (relHints.length) out['8_change'] = `Relationship shifts already tracked: ${relHints.join('; ')}.`;
+        }
+
+        return out;
+    },
+
+    wizardBaseAnswersOrdered() {
+        const qs = this.storyCircleQuestions();
+        const st = this.storySetupWizard;
+        return qs
+            .map((q) => ({
+                id: q.id,
+                label: q.label,
+                expandWhere: q.expandWhere,
+                answer: String(st.answerById[q.id] || '').trim()
+            }))
+            .filter((a) => a.answer);
+    },
+
+    async storySetupWizardBegin() {
+        const st = this.storySetupWizard;
+        st.phase = 'questions';
+        if (st.baseIndex >= 8) {
+            st.running = true;
+            this.renderStorySetupWizardModal();
+            await this.runStorySetupWizardAI();
+            return;
+        }
+        this.renderStorySetupWizardModal();
+        setTimeout(() => document.getElementById('storySetupWizardAnswer')?.focus(), 0);
+    },
+
+    storySetupWizardBeginFresh() {
+        const st = this.storySetupWizard;
+        this.clearStorySetupWizardDraft();
+        st.answerById = { ...this.buildWizardAnswerSeedsFromStory() };
+        st.baseIndex = this.computeWizardFirstIncompleteIndex(st.answerById);
+        void this.storySetupWizardBegin();
     },
 
     closeStorySetupWizard() {
@@ -137,47 +315,109 @@ const App = {
 
     storyCircleQuestions() {
         return [
-            { id: '1_you', label: '1) You — Who is your protagonist (and what do they want right now)?' },
-            { id: '2_need', label: '2) Need — What do they need (deeply) that they don’t yet understand?' },
-            { id: '3_go', label: '3) Go — What do they enter / commit to (new world, mission, court, war)?' },
-            { id: '4_search', label: '4) Search — What trials force them to adapt (politics, logistics, danger)?' },
-            { id: '5_find', label: '5) Find — What do they get (a win, ally, tool, truth) and what does it cost?' },
-            { id: '6_take', label: '6) Take — What do they pay / sacrifice / lose to move forward?' },
-            { id: '7_return', label: '7) Return — How do they return to the old world / new normal?' },
-            { id: '8_change', label: '8) Change — How are they transformed (beliefs, tactics, relationships)?' }
+            {
+                id: '1_you',
+                label: '1) You — Who is your protagonist (and what do they want right now)?',
+                context:
+                    'Dan Harmon’s “You” is the comfort zone: who they are and what they think they want before the story really grabs them. Name concrete traits, rank, habits, and the surface goal—plus what they would never admit they are afraid of.',
+                expandWhere:
+                    'Characters tab (protagonist description, role, background) and timeline Story Circle beat 1—the emotional “before” picture.'
+            },
+            {
+                id: '2_need',
+                label: '2) Need — What do they need (deeply) that they don’t yet understand?',
+                context:
+                    'The “Need” is internal: the lesson or change that will matter in beat 8, often hidden behind the “Want.” Contrast what they chase (ego, duty, revenge) with what would actually heal or mature them.',
+                expandWhere:
+                    'Character notes, personality, and arc fields; this need should complicate their choices in beats 4–6 when you draft scenes.'
+            },
+            {
+                id: '3_go',
+                label: '3) Go — What do they enter / commit to (new world, mission, court, war)?',
+                context:
+                    'The “Go” beat is the doorway: a choice or push that makes the new situation unavoidable—crossing into court politics, a campaign, time travel, or a pact. What do they say yes to, and what closes the door behind them?',
+                expandWhere:
+                    'Timeline Story Circle beat 3 (commitment / new world). If that event is thin, add title, description, and location there.'
+            },
+            {
+                id: '4_search',
+                label: '4) Search — What trials force them to adapt (politics, logistics, danger)?',
+                context:
+                    'The “Search” is trial-and-error: schemes fail, allies waver, rules of the new world bite. List pressures (supply, legitimacy, rivals, time-travel limits) that force new behavior—not just fights, but bureaucracy and morale.',
+                expandWhere:
+                    'Timeline beat 4 and open work items (research, continuity, plot-hole tasks). Weak answers here often mean a thin middle act.'
+            },
+            {
+                id: '5_find',
+                label: '5) Find — What do they get (a win, ally, tool, truth) and what does it cost?',
+                context:
+                    'The “Find” is a real gain—information, an ally, a battle won—but Harmon uses it to set up a harder choice. What do they *think* victory looks like, and what complication comes with it?',
+                expandWhere:
+                    'Timeline beat 5 (midpoint / apparent win). Make sure the “cost” echoes later so beat 6 feels earned.'
+            },
+            {
+                id: '6_take',
+                label: '6) Take — What do they pay / sacrifice / lose to move forward?',
+                context:
+                    'The “Take” is the price under pressure: a loss, moral compromise, public humiliation, or someone hurt because of their plan. This is often the darkest or most honest beat before the return.',
+                expandWhere:
+                    'Timeline beat 6 and relationship fractures—name who loses trust, status, or safety if this is vague.'
+            },
+            {
+                id: '7_return',
+                label: '7) Return — How do they return to the old world / new normal?',
+                context:
+                    'The “Return” carries the lesson or prize back toward the ordinary world or a new status quo—chase, aftermath, trial, or reconciliation. How is the external situation different now?',
+                expandWhere:
+                    'Timeline beat 7 (road back / consequences landing), locations, and who is still in play from earlier beats.'
+            },
+            {
+                id: '8_change',
+                label: '8) Change — How are they transformed (beliefs, tactics, relationships)?',
+                context:
+                    'The “Change” proves growth: they act differently than in beat 1, or see the same world with new eyes. Show the shift in one decisive behavior or line of dialogue you could write tomorrow.',
+                expandWhere:
+                    'Timeline beat 8 and the Relationships tab—who trusts them now, who they owe; proof the arc landed.'
+            }
         ];
     },
 
     wizardAllAnswers() {
-        const base = this.storySetupWizard.baseAnswers.map(a => ({ questionId: a.id, question: a.label, answer: a.answer }));
-        const follow = this.storySetupWizard.followUpAnswers.map(a => ({ questionId: 'followup', question: a.question, answer: a.answer }));
-        return [...base, ...follow].filter(x => String(x.answer || '').trim());
+        const base = this.storyCircleQuestions().map((q) => {
+            const answer = String(this.storySetupWizard.answerById[q.id] || '').trim();
+            if (!answer) return null;
+            const question = q.expandWhere ? `${q.label}\n[Where to expand in the project: ${q.expandWhere}]` : q.label;
+            return { questionId: q.id, question, answer };
+        }).filter(Boolean);
+        const follow = this.storySetupWizard.followUpAnswers.map((a) => ({
+            questionId: 'followup',
+            question: a.question,
+            answer: a.answer
+        }));
+        return [...base, ...follow].filter((x) => String(x.answer || '').trim());
     },
 
     async submitStorySetupWizardAnswer() {
         if (this.storySetupWizard.running) return;
         const input = document.getElementById('storySetupWizardAnswer');
         const text = String(input?.value || '').trim();
-        if (!text) return;
-
-        // Clear input early for "chatty" feel.
-        if (input) input.value = '';
-
         const qs = this.storyCircleQuestions();
         const phase = this.storySetupWizard.phase;
 
-        if (phase === 'intro') {
-            this.storySetupWizard.phase = 'questions';
-        }
+        if (phase === 'followups' && !text) return;
+
+        if (phase === 'questions' && !text) return;
+
+        if (input) input.value = '';
 
         if (this.storySetupWizard.phase === 'questions') {
             const idx = this.storySetupWizard.baseIndex;
             const q = qs[idx];
             if (q) {
-                this.storySetupWizard.baseAnswers.push({ id: q.id, label: q.label, answer: text });
+                this.storySetupWizard.answerById[q.id] = text;
                 this.storySetupWizard.baseIndex = Math.min(qs.length, idx + 1);
             }
-            // Adaptive: run AI after every answer.
+            this.saveStorySetupWizardDraft();
             await this.runStorySetupWizardAI();
             return;
         }
@@ -188,9 +428,33 @@ const App = {
                 this.storySetupWizard.followUpAnswers.push({ question: q, answer: text });
                 this.storySetupWizard.followUpQuestions = this.storySetupWizard.followUpQuestions.slice(1);
             }
-            // After a follow-up answer, run AI again (either next follow-up, or READY).
+            this.saveStorySetupWizardDraft();
             await this.runStorySetupWizardAI();
             return;
+        }
+    },
+
+    async storySetupWizardSkipCurrentQuestion() {
+        const st = this.storySetupWizard;
+        if (st.running) return;
+        if (st.phase === 'questions') {
+            const qs = this.storyCircleQuestions();
+            const q = qs[st.baseIndex];
+            if (!q) return;
+            delete st.answerById[q.id];
+            st.baseIndex = Math.min(qs.length, st.baseIndex + 1);
+            this.saveStorySetupWizardDraft();
+            await this.runStorySetupWizardAI();
+            return;
+        }
+        if (st.phase === 'followups') {
+            const q = st.followUpQuestions[0];
+            if (q) {
+                st.followUpAnswers.push({ question: q, answer: '(skipped)' });
+                st.followUpQuestions = st.followUpQuestions.slice(1);
+            }
+            this.saveStorySetupWizardDraft();
+            await this.runStorySetupWizardAI();
         }
     },
 
@@ -215,8 +479,10 @@ const App = {
                 this.storySetupWizard.phase = 'review';
             } else {
                 const qs = Array.isArray(result?.questions) ? result.questions : [];
-                const cleaned = qs.map(q => String(q || '').trim()).filter(Boolean).slice(0, 1);
-                this.storySetupWizard.followUpQuestions = cleaned.length ? cleaned : ['What is the single most important realism constraint to obey?'];
+                const cleaned = qs.map((q) => String(q || '').trim()).filter(Boolean).slice(0, 3);
+                this.storySetupWizard.followUpQuestions = cleaned.length
+                    ? cleaned
+                    : ['What is the single most important realism constraint for this story?'];
                 this.storySetupWizard.followupHistory.push(...this.storySetupWizard.followUpQuestions);
                 this.storySetupWizard.phase = 'followups';
             }
@@ -365,6 +631,7 @@ const App = {
         this.storyData.relationships = [...relArr, ...newRels];
 
         StorageService.saveStoryData(this.storyData);
+        this.clearStorySetupWizardDraft();
         this.storySetupWizard.phase = 'committed';
         this.render();
         this.generateOrUpdateMasterScript?.();
@@ -375,8 +642,11 @@ const App = {
         const st = this.storySetupWizard;
         if (st.running) return;
         if (st.phase === 'followups') {
-            // Back from followup returns to the last base question (does not delete answers).
             st.phase = 'questions';
+            // After each base question we advance baseIndex for the *next* step before AI runs,
+            // so to re-open the step the user just left, go back one index (cap at last question).
+            st.baseIndex = Math.max(0, Math.min(st.baseIndex - 1, 7));
+            this.saveStorySetupWizardDraft();
             this.renderStorySetupWizardModal();
             setTimeout(() => document.getElementById('storySetupWizardAnswer')?.focus(), 0);
             return;
@@ -384,14 +654,12 @@ const App = {
         if (st.phase !== 'questions') return;
         if (st.baseIndex <= 0) {
             st.phase = 'intro';
+            this.saveStorySetupWizardDraft();
             this.renderStorySetupWizardModal();
             return;
         }
-        // Step back and allow rewriting the previous answer.
         st.baseIndex = Math.max(0, st.baseIndex - 1);
-        const prev = st.baseAnswers.pop();
-        const input = document.getElementById('storySetupWizardAnswer');
-        if (input && prev?.answer) input.value = String(prev.answer);
+        this.saveStorySetupWizardDraft();
         this.renderStorySetupWizardModal();
         setTimeout(() => document.getElementById('storySetupWizardAnswer')?.focus(), 0);
     },
@@ -447,12 +715,13 @@ const App = {
             // no-op; modal is created at startup
         }
 
-        const progress = Math.min(8, st.baseIndex);
-        const pct = Math.round((progress / 8) * 100);
+        const pct = Math.round((Math.min(st.baseIndex, 8) / 8) * 100);
+        const stepDisplay = Math.min(8, st.baseIndex + 1);
 
         const answerList = (arr) => arr.map((a) => `
             <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/55 p-4">
                 <div class="text-xs font-extrabold uppercase tracking-[0.14em] text-zinc-500">${this.escapeHTML(a.label || a.question || '')}</div>
+                ${a.expandWhere ? `<div class="mt-1.5 text-[11px] font-semibold leading-relaxed text-violet-300/90">Where to expand: ${this.escapeHTML(a.expandWhere)}</div>` : ''}
                 <div class="mt-2 text-sm font-semibold leading-relaxed text-zinc-200">${this.escapeHTML(a.answer || '')}</div>
             </div>
         `).join('');
@@ -460,23 +729,32 @@ const App = {
         const intro = `
             <div class="space-y-6">
                 <div class="rounded-2xl border border-violet-500/20 bg-gradient-to-b from-zinc-950 via-zinc-950 to-violet-950/20 p-6 ring-1 ring-inset ring-violet-500/10">
-                    <div class="text-[11px] font-extrabold uppercase tracking-[0.2em] text-violet-300/95">Wizard</div>
+                    <div class="text-[11px] font-extrabold uppercase tracking-[0.2em] text-violet-300/95">Story Wizard</div>
                     <div class="mt-2 font-serif text-3xl font-semibold tracking-tight text-zinc-50">Build Your Story Context</div>
-                    <div class="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-400">We’ll walk the 8 beats of Dan Harmon’s Story Circle. After that, your local LLM asks only the minimum follow-ups needed—then it populates characters, beats, relationships, and work items for you to review.</div>
+                    <div class="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-400">We’ll walk the 8 beats of Dan Harmon’s Story Circle. Each step includes <strong class="text-zinc-200">what the beat means</strong> and <strong class="text-zinc-200">where to expand in the app</strong> (timeline beats, characters, work items). Fields are <strong class="text-zinc-200">pre-filled from your current story</strong> where possible—edit, add detail, or use <strong class="text-zinc-200">Skip</strong> on any step. Your local LLM reads every answer and may ask <strong class="text-zinc-200">1–3 short follow-ups</strong> to clarify before it stages characters, beats, relationships, and tasks.</div>
+                    <p class="text-xs font-semibold text-zinc-500">Progress is saved in this browser until you apply to the story or tap “Begin fresh”.</p>
                 </div>
-                <button type="button" class="w-full rounded-2xl bg-violet-600 px-6 py-4 text-base font-extrabold text-white shadow-[0_18px_60px_-14px_rgba(91,33,182,0.85)] ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.storySetupWizard.phase='questions'; App.renderStorySetupWizardModal(); setTimeout(()=>document.getElementById('storySetupWizardAnswer')?.focus(),0);">Begin</button>
+                <div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+                    <button type="button" class="w-full flex-1 rounded-2xl bg-violet-600 px-6 py-4 text-base font-extrabold text-white shadow-[0_18px_60px_-14px_rgba(91,33,182,0.85)] ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99] sm:min-w-[200px]" onclick="App.storySetupWizardBegin()">Continue</button>
+                    <button type="button" class="w-full flex-1 rounded-2xl border border-zinc-600/90 bg-zinc-900/60 px-6 py-4 text-sm font-extrabold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800/80 sm:min-w-[200px]" onclick="App.storySetupWizardBeginFresh()">Begin fresh <span class="block text-[11px] font-semibold text-zinc-500">(story seeds only, clears saved draft)</span></button>
+                </div>
             </div>
         `;
 
-        const currentQ = qs[Math.min(qs.length - 1, st.baseIndex)]?.label || 'Story Circle';
+        const baseQObj = st.baseIndex < 8 ? qs[st.baseIndex] : null;
+        const currentQ =
+            phase === 'followups'
+                ? (st.followUpQuestions?.[0] || 'Follow-up')
+                : baseQObj?.label || (st.running ? 'Working with your local model…' : 'Finishing…');
         const followQ = st.followUpQuestions?.[0] || 'Follow-up';
+        const taPrefill = baseQObj ? String(st.answerById[baseQObj.id] || '') : '';
 
         const questionPanel = `
             <div class="space-y-6">
                 <div class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5">
                     <div class="flex flex-wrap items-center justify-between gap-3">
                         <div>
-                            <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-zinc-500">Step ${Math.max(1, Math.min(8, progress || 1))} of 8 – Dan Harmon Story Circle</div>
+                            <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-zinc-500">Step ${Math.max(1, Math.min(8, stepDisplay))} of 8 – Dan Harmon Story Circle</div>
                             <div class="mt-2 text-lg font-black tracking-tight text-zinc-50">${phase === 'followups' ? 'Follow-up (only if needed)' : 'Canon foundation'}</div>
                         </div>
                         <button type="button" class="rounded-xl border border-zinc-700/90 bg-zinc-950/50 px-4 py-2 text-xs font-extrabold text-zinc-200 ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.storySetupWizardSkipToEnd()">Skip to end</button>
@@ -489,12 +767,24 @@ const App = {
                 <div class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-6">
                     <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-300/90">${phase === 'followups' ? 'Follow-up' : 'Story Circle'}</div>
                     <div class="mt-2 text-2xl font-black tracking-tight text-zinc-50">${this.escapeHTML(phase === 'followups' ? followQ : currentQ)}</div>
+                    ${phase === 'questions' && baseQObj ? `
+                        <div class="mt-4 space-y-3 rounded-2xl border border-violet-500/20 bg-gradient-to-b from-violet-950/35 to-zinc-950/40 p-4 ring-1 ring-inset ring-violet-500/10">
+                            <p class="text-sm leading-relaxed text-zinc-300">${this.escapeHTML(baseQObj.context)}</p>
+                            <div class="border-t border-violet-500/15 pt-3">
+                                <div class="text-[10px] font-extrabold uppercase tracking-[0.14em] text-violet-200/95">Where to expand in your project</div>
+                                <p class="mt-1.5 text-xs font-semibold leading-relaxed text-violet-100/90">${this.escapeHTML(baseQObj.expandWhere)}</p>
+                            </div>
+                        </div>
+                        <p class="mt-3 text-xs font-semibold text-zinc-500">Edit the answer below or skip this beat — the model sees all saved answers and this step’s context.</p>
+                    ` : ''}
+                    ${phase === 'followups' ? `<p class="mt-3 text-xs font-semibold text-zinc-500">Short answers are fine. Skip if you prefer — the model still uses your Story Circle answers.</p>` : ''}
                     <div class="mt-4">
-                        <textarea id="storySetupWizardAnswer" rows="6" class="w-full rounded-2xl border border-zinc-700/90 bg-zinc-950 p-5 text-sm font-semibold leading-relaxed text-zinc-100 shadow-inner shadow-black/40 outline-none ring-2 ring-transparent placeholder:text-zinc-600 focus:border-violet-500/50 focus:ring-violet-500/25" placeholder="Type your answer…"></textarea>
+                        <textarea id="storySetupWizardAnswer" rows="6" class="w-full rounded-2xl border border-zinc-700/90 bg-zinc-950 p-5 text-sm font-semibold leading-relaxed text-zinc-100 shadow-inner shadow-black/40 outline-none ring-2 ring-transparent placeholder:text-zinc-600 focus:border-violet-500/50 focus:ring-violet-500/25" placeholder="Type your answer…">${this.escapeHTML(taPrefill)}</textarea>
                         <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                                 <button type="button" class="rounded-xl border border-zinc-700/90 bg-zinc-950/40 px-6 py-3 text-sm font-extrabold text-zinc-200 shadow-md ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.storySetupWizardBack()">Back</button>
-                                <button type="button" class="rounded-xl bg-violet-600 px-6 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99] disabled:opacity-60" ${st.running ? 'disabled' : ''} onclick="App.submitStorySetupWizardAnswer()">${st.running ? 'Thinking…' : (phase === 'followups' ? 'Submit follow-up' : 'Next')}</button>
+                                <button type="button" class="rounded-xl bg-violet-600 px-6 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99] disabled:opacity-60" ${st.running ? 'disabled' : ''} onclick="App.submitStorySetupWizardAnswer()">${st.running ? 'Thinking…' : (phase === 'followups' ? 'Submit answer' : 'Save &amp; continue')}</button>
+                                <button type="button" class="rounded-xl border border-zinc-600/80 bg-zinc-900/50 px-6 py-3 text-sm font-extrabold text-zinc-300 transition hover:border-zinc-500 hover:bg-zinc-800/70 disabled:opacity-50" ${st.running ? 'disabled' : ''} onclick="App.storySetupWizardSkipCurrentQuestion()">${phase === 'followups' ? 'Skip question' : 'Skip this question'}</button>
                             </div>
                             <button type="button" class="topbar-ghost" onclick="App.skipStorySetupWizard()">Close</button>
                         </div>
@@ -502,11 +792,11 @@ const App = {
                     </div>
                 </div>
 
-                ${st.baseAnswers.length ? `
+                ${this.wizardBaseAnswersOrdered().length ? `
                     <details class="rounded-2xl border border-zinc-800/80 bg-zinc-950/40 p-5">
-                        <summary class="cursor-pointer list-none text-sm font-extrabold text-zinc-200 select-none [&::-webkit-details-marker]:hidden">Show answers so far</summary>
+                        <summary class="cursor-pointer list-none text-sm font-extrabold text-zinc-200 select-none [&::-webkit-details-marker]:hidden">Story Circle answers and expansion hints (sent to the model)</summary>
                         <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                            ${answerList(st.baseAnswers)}
+                            ${answerList(this.wizardBaseAnswersOrdered())}
                         </div>
                     </details>
                 ` : ''}
@@ -1632,22 +1922,101 @@ const App = {
         this.importNotesState.rawText = String(value || '');
     },
 
+    _pdfJsWorkerSrc: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+
+    async readImportNotesFileAsText(file) {
+        const name = String(file?.name || '').toLowerCase();
+
+        if (name.endsWith('.txt') || name.endsWith('.md')) {
+            return await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(String(reader.result || ''));
+                reader.onerror = () => reject(new Error('Could not read text file.'));
+                reader.readAsText(file);
+            });
+        }
+
+        if (name.endsWith('.docx')) {
+            if (typeof globalThis.mammoth === 'undefined') {
+                throw new Error('DOCX support did not load (mammoth). Refresh the page or check your network.');
+            }
+            const buf = await file.arrayBuffer();
+            const result = await globalThis.mammoth.extractRawText({ arrayBuffer: buf });
+            const warnings = Array.isArray(result?.messages)
+                ? result.messages.map((m) => m?.message).filter(Boolean)
+                : [];
+            if (warnings.length) {
+                console.warn('DOCX import:', warnings.slice(0, 3).join(' '));
+            }
+            return String(result?.value || '').trim();
+        }
+
+        if (name.endsWith('.pdf')) {
+            const pdfjs = globalThis.pdfjsLib;
+            if (!pdfjs?.getDocument) {
+                throw new Error('PDF support did not load (pdf.js). Refresh the page or check your network.');
+            }
+            pdfjs.GlobalWorkerOptions.workerSrc = this._pdfJsWorkerSrc;
+            const buf = await file.arrayBuffer();
+            const pdf = await pdfjs.getDocument({ data: buf }).promise;
+            const parts = [];
+            for (let i = 1; i <= pdf.numPages; i += 1) {
+                const page = await pdf.getPage(i);
+                const content = await page.getTextContent();
+                const line = content.items.map((item) => ('str' in item ? item.str : '')).join(' ');
+                parts.push(line);
+            }
+            return parts.join('\n\n').trim();
+        }
+
+        throw new Error('Unsupported file type.');
+    },
+
     async onImportNotesFileSelected(file) {
         if (!file) return;
         const name = String(file.name || '').toLowerCase();
-        if (!(name.endsWith('.txt') || name.endsWith('.md'))) {
-            alert('Please upload a .txt or .md file.');
+        const ok =
+            name.endsWith('.txt') ||
+            name.endsWith('.md') ||
+            name.endsWith('.docx') ||
+            name.endsWith('.pdf');
+        if (!ok) {
+            alert('Please upload a .txt, .md, .docx, or .pdf file.');
             return;
         }
-        const reader = new FileReader();
-        reader.onload = () => {
-            this.importNotesState.rawText = String(reader.result || '');
+
+        const status = document.getElementById('importNotesStatus');
+        if (status && (name.endsWith('.docx') || name.endsWith('.pdf'))) {
+            status.innerHTML = '<div class="ai-status analyzing"><span class="spinner"></span> Reading file…</div>';
+        }
+
+        try {
+            const text = await this.readImportNotesFileAsText(file);
+            this.importNotesState.rawText = text;
             const paste = document.getElementById('importNotesPaste');
             if (paste) paste.value = this.importNotesState.rawText;
             this.importNotesState.activeTab = 'paste';
+
+            if (status) {
+                const trimmed = String(this.importNotesState.rawText || '').trim();
+                if (!trimmed && name.endsWith('.pdf')) {
+                    status.innerHTML =
+                        '<div class="ai-status disconnected">No selectable text found in this PDF (it may be image-only). Try OCR elsewhere, then paste.</div>';
+                } else if (!trimmed && (name.endsWith('.docx') || name.endsWith('.pdf'))) {
+                    status.innerHTML = '<div class="ai-status disconnected">No text was extracted from this file.</div>';
+                } else if (name.endsWith('.docx') || name.endsWith('.pdf')) {
+                    status.innerHTML =
+                        '<div class="ai-status connected">✅ File loaded into the editor. Run Extract when ready.</div>';
+                }
+            }
             this.renderImportNotesUI();
-        };
-        reader.readAsText(file);
+        } catch (e) {
+            if (status) {
+                status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(e?.message || 'Could not read file')}</div>`;
+            } else {
+                alert(e?.message || 'Could not read file');
+            }
+        }
     },
 
     async extractFromNotes() {
@@ -2950,12 +3319,14 @@ const App = {
             return;
         }
 
+        const hj = document.getElementById('newEventHeroJourney')?.value?.trim() || '';
         const newEvent = createTimelineEvent({
             id: Math.max(...this.storyData.events.map(e => e.id), 0) + 1,
             title,
             period,
             order: this.storyData.events.length,
             beat: beat || null,
+            heroJourney: hj || null,
             description,
             location: joinTimelineLocation(locPreset, locCustom)
         });
@@ -2967,6 +3338,8 @@ const App = {
         document.getElementById('newEventTitle').value = '';
         document.getElementById('newEventPeriod').value = '';
         document.getElementById('newEventBeat').value = '';
+        const nhj = document.getElementById('newEventHeroJourney');
+        if (nhj) nhj.value = '';
         document.getElementById('newEventDescription').value = '';
         const np = document.getElementById('newEventLocationPreset');
         const nc = document.getElementById('newEventLocationCustom');
@@ -3058,6 +3431,16 @@ const App = {
                 </select>
             </div>
             <div>
+                <label class="block text-sm font-medium mb-2">Hero's Journey step (optional)</label>
+                <select id="editEventHeroJourney" class="form-input">
+                    <option value="">— None —</option>
+                    ${HERO_JOURNEY_STEPS.map((s) => {
+                        const sel = String(event.heroJourney || '') === s.id ? 'selected' : '';
+                        return `<option value="${s.id}" ${sel}>${s.id} · ${this.escapeHTML(s.short)}</option>`;
+                    }).join('')}
+                </select>
+            </div>
+            <div>
                 <label class="block text-sm font-medium mb-2">Short Description</label>
                 <input type="text" id="editEventDescription" class="form-input" value="${this.escapeHTML(event.description || '')}">
             </div>
@@ -3089,10 +3472,12 @@ const App = {
 
         const locPreset = document.getElementById('editEventLocationPreset')?.value ?? '';
         const locCustom = document.getElementById('editEventLocationCustom')?.value ?? '';
+        const hjVal = document.getElementById('editEventHeroJourney')?.value?.trim() || '';
         const patch = {
             title: document.getElementById('editEventTitle').value.trim(),
             period: document.getElementById('editEventPeriod').value.trim(),
             beat: document.getElementById('editEventBeat').value || null,
+            heroJourney: hjVal || null,
             description: document.getElementById('editEventDescription').value.trim(),
             fullDescription: document.getElementById('editEventFullDescription').value.trim(),
             location: joinTimelineLocation(locPreset, locCustom)
@@ -3105,6 +3490,48 @@ const App = {
     },
 
     /**
+     * Hero's Journey: 12 shape columns; events with matching heroJourney appear as chips.
+     * @param {Array<object>} sortedEvents same filter as story-order strip
+     */
+    renderHeroJourneyStrip(sortedEvents) {
+        const host = document.getElementById('heroJourneyShapeHost');
+        if (!host) return;
+
+        const byStep = new Map();
+        HERO_JOURNEY_STEPS.forEach((s) => byStep.set(s.id, []));
+        (sortedEvents || []).forEach((ev) => {
+            const hj = ev.heroJourney != null && ev.heroJourney !== '' ? String(ev.heroJourney) : '';
+            if (byStep.has(hj)) byStep.get(hj).push(ev);
+        });
+        byStep.forEach((list) => list.sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0)));
+
+        const columns = HERO_JOURNEY_STEPS.map((step, i) => {
+            const kind = TIMELINE_SHAPE_KINDS[i % TIMELINE_SHAPE_KINDS.length];
+            const eventsHere = byStep.get(step.id) || [];
+            const chips = eventsHere
+                .map((ev) => {
+                    const raw = String(ev.title || 'Untitled').trim();
+                    const short = raw.length > 18 ? `${raw.slice(0, 17)}…` : raw;
+                    const cj = ev.isCanon ? 'hero-journey-chip-canon' : 'hero-journey-chip-draft';
+                    return `<button type="button" class="hero-journey-event-chip ${cj}" onclick="App.openEventEditor(${ev.id})" title="${this.escapeHTML(ev.title)}">${this.escapeHTML(short)}</button>`;
+                })
+                .join('');
+
+            return `
+                <div role="listitem" class="hero-journey-step-column">
+                    <div class="timeline-shape-icon timeline-shape-kind-${kind} timeline-shape-hero-ref" title="${this.escapeHTML(step.short)}">
+                        <span class="timeline-shape-label-inner">${i + 1}</span>
+                    </div>
+                    <div class="hero-journey-step-name">${this.escapeHTML(step.abbr)}</div>
+                    <div class="hero-journey-chip-stack">${chips || '<span class="hero-journey-step-empty" aria-hidden="true">—</span>'}</div>
+                </div>
+            `;
+        });
+
+        host.innerHTML = columns.join('');
+    },
+
+    /**
      * Render timeline with story circle
      */
     renderTimelineWithCircle() {
@@ -3114,15 +3541,6 @@ const App = {
             this.renderGhostBorderInteractiveMap();
             return;
         }
-
-        const beatPositions = {
-            '1': 45, '2': 315, '3': 270, '4': 225,
-            '5': 180, '6': 135, '7': 90, '8': 0
-        };
-
-        const radius = 240;
-        const centerX = 300;
-        const centerY = 300;
 
         const sortedEventsAll = [...this.storyData.events].sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0));
         const beatFilter = this.globalSearch.beats;
@@ -3140,34 +3558,34 @@ const App = {
                 const blob = `${ev.title || ''} ${ev.period || ''} ${ev.location || ''} ${ev.description || ''} ${ev.fullDescription || ''} ${involvedNames}`;
                 return blob.toLowerCase().includes(q);
             });
-        const eventsWithBeat = sortedEvents.filter(e => e.beat);
-        const beatOffsets = {};
 
-        circleContainer.innerHTML = eventsWithBeat
-            .map(event => {
-                const angle = beatPositions[event.beat];
-                const radians = (angle - 90) * Math.PI / 180;
-                const idx = beatOffsets[event.beat] || 0;
-                beatOffsets[event.beat] = idx + 1;
-
-                // Nudge overlapping events on the same beat so each marker stays clickable.
-                const offsetRadius = radius + (idx * 18);
-                const x = centerX + offsetRadius * Math.cos(radians);
-                const y = centerY + offsetRadius * Math.sin(radians);
-                const xPct = (x / 600) * 100;
-                const yPct = (y / 600) * 100;
-
+        if (sortedEvents.length === 0) {
+            circleContainer.innerHTML = '<div class="timeline-shapes-empty">No events match the current filters. Add events below or adjust search / canon filter.</div>';
+        } else {
+            const nodes = sortedEvents.map((event, i) => {
+                const kind = TIMELINE_SHAPE_KINDS[i % TIMELINE_SHAPE_KINDS.length];
+                const canonClass = event.isCanon ? 'timeline-shape-canon' : 'timeline-shape-draft';
+                const rawTitle = String(event.title || 'Untitled').trim();
+                const titleShort = rawTitle.length > 24 ? `${rawTitle.slice(0, 23)}…` : rawTitle;
+                const beatNote = event.beat
+                    ? `<div class="timeline-shape-beat">Beat ${this.escapeHTML(String(event.beat))}</div>`
+                    : '';
                 return `
-                    <div
-                        class="event-on-circle"
-                        style="left: ${xPct}%; top: ${yPct}%; margin-left: -12px; margin-top: -12px;"
-                        onclick="App.openEventEditor(${event.id})"
-                        title="Click to edit: ${event.title}"
-                    >
-                        E${event.id}
+                    <div role="listitem" class="timeline-event-shape-node"
+                         onclick="App.openEventEditor(${event.id})"
+                         title="Click to edit: ${this.escapeHTML(event.title)}">
+                        <div class="timeline-shape-icon timeline-shape-kind-${kind} ${canonClass}">
+                            <span class="timeline-shape-label-inner">${i + 1}</span>
+                        </div>
+                        <div class="timeline-shape-title">${this.escapeHTML(titleShort)}</div>
+                        ${beatNote}
                     </div>
                 `;
-            }).join('');
+            });
+            circleContainer.innerHTML = nodes.join('<span class="timeline-shape-arrow" aria-hidden="true">→</span>');
+        }
+
+        this.renderHeroJourneyStrip(sortedEvents);
 
         const charById = new Map((this.storyData.characters || []).map(c => [c.id, c]));
 
@@ -3214,6 +3632,7 @@ const App = {
                                         </select>`
                                         : `${event.beat ? ` • <span style="cursor:text; text-decoration: underline; text-underline-offset: 2px;" onclick="App.startInlineEdit('event', ${event.id}, 'beat', '${this.escapeHTML(event.beat)}')" title="Click to change beat">Story Beat ${this.escapeHTML(event.beat)}</span>` : ` • <span style="cursor:text; text-decoration: underline; text-underline-offset: 2px;" onclick="App.startInlineEdit('event', ${event.id}, 'beat', '')" title="Click to assign beat">Assign beat</span>`}`
                                 }
+                                ${event.heroJourney ? ` · <span class="font-semibold text-teal-600 dark:text-teal-400/90" title="Hero's Journey step (edit in Details)">HJ ${this.escapeHTML(String(event.heroJourney))}</span>` : ''}
                             </div>
                             ${event.description ? `<div class="text-sm text-zinc-300 mt-1">${event.description}</div>` : ''}
                             ${
@@ -3524,11 +3943,11 @@ const App = {
                 ${items.map(item => `
                     <div class="flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200/50 bg-zinc-50/60 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950/35">
                         <input class="h-4 w-4 rounded border-zinc-300 text-indigo-500 focus:ring-indigo-500/40 dark:border-zinc-700 dark:bg-zinc-900" type="checkbox" ${item.completed ? 'checked' : ''} onchange="App.toggleWorkItem(${item.id})">
-                        <span class="min-w-[160px] flex-1 text-sm font-semibold ${item.completed ? 'text-zinc-500 line-through' : 'text-zinc-100'}">${item.title}</span>
+                        <span class="min-w-[160px] flex-1 text-sm font-semibold ${item.completed ? 'text-zinc-500 line-through dark:text-zinc-500' : 'text-zinc-900 dark:text-zinc-100'}">${item.title}</span>
                         <div class="flex flex-wrap items-center gap-2">
                             ${item.isCanon ? this.renderCanonBadge('workItem', item.id) : this.renderDraftTag()}
                             <button class="rounded-lg bg-gradient-to-r from-indigo-500 to-violet-600 px-3 py-1.5 text-[11px] font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.editWorkItem(${item.id})">Edit</button>
-                            <button class="rounded-lg border border-violet-500/35 bg-violet-600/15 px-3 py-1.5 text-[11px] font-extrabold text-violet-100 hover:bg-violet-600/20" onclick="App.runDeepResearchWorkItem(${item.id})">Deep research</button>
+                            <button class="rounded-lg border border-violet-500/35 bg-violet-600/15 px-3 py-1.5 text-[11px] font-extrabold text-violet-900 hover:bg-violet-600/25 dark:text-violet-100 dark:hover:bg-violet-600/20" onclick="App.runDeepResearchWorkItem(${item.id})">Deep research</button>
                             <button class="rounded-lg border border-zinc-200/60 bg-white/70 px-3 py-1.5 text-[11px] font-extrabold text-zinc-900 hover:bg-white dark:border-zinc-800 dark:bg-zinc-950/50 dark:text-zinc-100 dark:hover:bg-zinc-950" onclick="App.openWebResearch(${item.id})">Web</button>
                             <button class="delete-btn rounded-lg px-3 py-1.5 text-[11px] font-extrabold" onclick="App.deleteWorkItem(${item.id})">Delete</button>
                         </div>
@@ -3767,6 +4186,8 @@ const App = {
         this.updateAIPlatformInfo(AIService.settings.platform);
         document.getElementById('aiHost').value = AIService.settings.host;
         document.getElementById('aiPort').value = AIService.settings.port;
+        document.getElementById('localGenerationTimeoutMinutes').value =
+            AIService.settings.localGenerationTimeoutMinutes ?? 15;
         document.getElementById('selectedModel').value = AIService.settings.model;
         document.getElementById('imageProvider').value = AIService.settings.imageProvider || 'openai_compatible';
         document.getElementById('imageApiUrl').value = AIService.settings.imageApiUrl || '';
@@ -3868,6 +4289,14 @@ const App = {
         const deepResearchApiKey = document.getElementById('deepResearchApiKey').value.trim();
         const platform = document.querySelector('input[name="aiPlatform"]:checked').value;
         const statusDiv = document.getElementById('aiConnectionStatus');
+        let localGenerationTimeoutMinutes = Number.parseInt(
+            document.getElementById('localGenerationTimeoutMinutes').value,
+            10
+        );
+        if (!Number.isInteger(localGenerationTimeoutMinutes)) {
+            localGenerationTimeoutMinutes = 15;
+        }
+        localGenerationTimeoutMinutes = Math.min(120, Math.max(1, localGenerationTimeoutMinutes));
 
         let normalized;
         try {
@@ -3882,6 +4311,7 @@ const App = {
             port: normalized.port,
             model,
             platform,
+            localGenerationTimeoutMinutes,
             imageProvider,
             imageApiUrl,
             imageModel,
@@ -4175,39 +4605,67 @@ const App = {
     },
 
     /**
+     * Story World Map modal: show which local model is targeted and what it is doing.
+     * @param {{ modelLine?: string, variant: 'loading'|'ready'|'fallback'|'error', detailText?: string }} opts
+     */
+    updateStoryWorldMapGrokModalModelStatus(opts) {
+        const { modelLine, variant, detailText } = opts || {};
+        const label = document.getElementById('storyWorldMapGrokModalModelLabel');
+        const detailEl = document.getElementById('storyWorldMapGrokModalStatusDetail');
+        if (label != null && modelLine != null) {
+            label.textContent = modelLine;
+        }
+        if (!detailEl) return;
+        const base = 'mt-2 text-sm';
+        if (variant === 'loading') {
+            detailEl.className = `${base} text-zinc-300`;
+            detailEl.innerHTML = `<span class="inline-flex items-center gap-2"><span class="spinner"></span><span>${this.escapeHTML(detailText || 'Working…')}</span></span>`;
+            return;
+        }
+        detailEl.textContent = detailText || '';
+        if (variant === 'ready') detailEl.className = `${base} font-medium text-emerald-300/95`;
+        else if (variant === 'error') detailEl.className = `${base} text-rose-300`;
+        else detailEl.className = `${base} text-amber-200/95`;
+    },
+
+    /**
      * Open Grok Imagine modal and fill prompt via text AI (AIService), with fallback to built-in draft.
      */
     async openStoryWorldMapGrokModal() {
         const modal = document.getElementById('storyWorldMapGrokModal');
         const ta = document.getElementById('storyWorldMapGrokModalPrompt');
-        const statusEl = document.getElementById('storyWorldMapGrokModalStatus');
         const actions = document.getElementById('storyWorldMapGrokModalActions');
         modal?.classList.add('active');
+        const modelLine = AIService.getLocalTextAiSummary();
+        this.updateStoryWorldMapGrokModalModelStatus({
+            modelLine,
+            variant: 'loading',
+            detailText: 'Calling your local text model to expand the map prompt…'
+        });
         if (ta) {
             ta.dataset.aiPending = '1';
             ta.value = 'Generating a detailed, ready-to-copy prompt with your text AI (LM Studio / Ollama)…\n\nIf this takes too long, close and try again after Test Connection in AI Settings.';
         }
-        if (statusEl) {
-            statusEl.classList.remove('hidden', 'text-emerald-400/90', 'text-amber-200');
-            statusEl.textContent = 'Calling AIService…';
-        }
         if (actions) actions.classList.add('pointer-events-none', 'opacity-50');
 
         try {
-            const text = await AIService.generateStoryWorldMapGrokPromptDetailed(this.storyData);
-            if (ta) ta.value = text;
-            if (statusEl) {
-                statusEl.textContent = 'Ready — copy and paste into Grok Imagine.';
-                statusEl.classList.remove('text-amber-200');
-                statusEl.classList.add('text-emerald-400/90');
-            }
+            const result = await AIService.generateStoryWorldMapGrokPromptDetailed(this.storyData);
+            if (ta) ta.value = result.text;
+            const variant =
+                result.mode === 'ai' ? 'ready' : result.mode === 'error' ? 'error' : 'fallback';
+            this.updateStoryWorldMapGrokModalModelStatus({
+                modelLine,
+                variant,
+                detailText: result.userMessage
+            });
         } catch (err) {
             const fb = this.buildStoryWorldMapGrokPrompt();
             if (ta) ta.value = fb;
-            if (statusEl) {
-                statusEl.textContent = `AI unavailable — showing built-in draft. (${String(err?.message || err)})`;
-                statusEl.classList.add('text-amber-200');
-            }
+            this.updateStoryWorldMapGrokModalModelStatus({
+                modelLine: AIService.getLocalTextAiSummary(),
+                variant: 'error',
+                detailText: String(err?.message || err || 'Unexpected error.')
+            });
         } finally {
             if (ta) delete ta.dataset.aiPending;
             if (actions) actions.classList.remove('pointer-events-none', 'opacity-50');
@@ -4216,11 +4674,12 @@ const App = {
 
     closeStoryWorldMapGrokModal() {
         document.getElementById('storyWorldMapGrokModal')?.classList.remove('active');
-        const st = document.getElementById('storyWorldMapGrokModalStatus');
-        if (st) {
-            st.classList.add('hidden');
-            st.textContent = '';
-            st.classList.remove('text-emerald-400/90', 'text-amber-200');
+        const label = document.getElementById('storyWorldMapGrokModalModelLabel');
+        const detail = document.getElementById('storyWorldMapGrokModalStatusDetail');
+        if (label) label.textContent = '';
+        if (detail) {
+            detail.textContent = '';
+            detail.className = 'mt-2 text-sm text-zinc-400';
         }
     },
 
@@ -6629,9 +7088,14 @@ const App = {
         if (!status || !panel) return;
 
         status.innerHTML = '<div class="ai-status analyzing"><span class="spinner"></span> Building map prompt (text AI if available), then requesting image…</div>';
-        const prompt = await AIService.generateStoryWorldMapGrokPromptDetailed(this.storyData);
+        const promptResult = await AIService.generateStoryWorldMapGrokPromptDetailed(this.storyData);
+        const prompt = promptResult.text;
+        const promptSourceLine =
+            promptResult.mode === 'ai'
+                ? 'Local text AI expanded the prompt.'
+                : promptResult.userMessage;
 
-        status.innerHTML = '<div class="ai-status analyzing"><span class="spinner"></span> Requesting map from your image API…</div>';
+        status.innerHTML = `<div class="ai-status analyzing"><span class="spinner"></span> ${this.escapeHTML(promptSourceLine)} Now requesting map from your image API…</div>`;
         panel.classList.add('hidden');
         panel.innerHTML = '';
 
@@ -7808,6 +8272,11 @@ function createAISettingsModal() {
                     <label class="block text-sm font-medium mb-2">Port</label>
                     <input type="number" id="aiPort" class="form-input" placeholder="1234">
                 </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Local text AI timeout (minutes)</label>
+                    <input type="number" id="localGenerationTimeoutMinutes" class="form-input" min="1" max="120" step="1" placeholder="15">
+                    <p class="text-zinc-400 text-sm mt-1">Max wait per LM Studio / Ollama reply (slow or CPU models often need 15–60+).</p>
+                </div>
 
                 <button class="test-connection-btn" style="width: 100%; margin-bottom: 1rem;" onclick="App.testAIConnection()">🔗 Test Connection</button>
 
@@ -7899,7 +8368,7 @@ function createImportNotesModal() {
 
                 <div class="modal-tabs">
                     <button id="importTabPaste" class="modal-tab active" onclick="App.setImportNotesTab('paste')">Paste Text</button>
-                    <button id="importTabUpload" class="modal-tab" onclick="App.setImportNotesTab('upload')">Upload File (.txt, .md)</button>
+                    <button id="importTabUpload" class="modal-tab" onclick="App.setImportNotesTab('upload')">Upload File</button>
                 </div>
 
                 <div id="importPanePaste" style="margin-top: 0.75rem;">
@@ -7908,9 +8377,9 @@ function createImportNotesModal() {
                 </div>
 
                 <div id="importPaneUpload" style="display:none; margin-top: 0.75rem;">
-                    <label class="block text-sm font-medium mb-2">Upload a .txt or .md file</label>
-                    <input type="file" class="form-input" accept=".txt,.md,text/plain,text/markdown" onchange="App.onImportNotesFileSelected(this.files?.[0] || null)">
-                    <div class="text-sm text-zinc-400" style="margin-top:0.4rem;">After upload, you’ll be returned to Paste Text with the file contents loaded.</div>
+                    <label class="block text-sm font-medium mb-2">Upload a file</label>
+                    <input type="file" class="form-input" accept=".txt,.md,.docx,.pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf" onchange="App.onImportNotesFileSelected(this.files?.[0] || null)">
+                    <div class="text-sm text-zinc-400" style="margin-top:0.4rem;">Supported: <strong class="text-zinc-300">.txt</strong>, <strong class="text-zinc-300">.md</strong>, <strong class="text-zinc-300">.docx</strong>, <strong class="text-zinc-300">.pdf</strong> (text-based PDFs; scanned pages need OCR). Contents load into Paste Text.</div>
                 </div>
 
                 <div style="display:flex; gap:0.6rem; flex-wrap: wrap; margin-top: 0.9rem;">
@@ -8194,7 +8663,11 @@ function createStoryWorldMapGrokModal() {
                 <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">Grok Imagine</div>
                 <h2 class="mt-2 text-2xl font-black tracking-tight text-zinc-50">Story World Map — prompt</h2>
                 <p class="mt-2 max-w-3xl text-sm leading-relaxed text-zinc-400">Timeline events <strong class="text-zinc-200">with a location</strong> are sent to your <strong class="text-violet-300">text AI</strong> (LM Studio / Ollama) to produce one rich, copy-ready image prompt. If the text AI is offline, you still get the built-in draft.</p>
-                <p id="storyWorldMapGrokModalStatus" class="story-world-map-grok-modal-status mt-3 hidden text-sm font-semibold text-violet-300/95" role="status"></p>
+                <div id="storyWorldMapGrokModalModelStatus" class="mt-4 rounded-xl border border-violet-500/20 bg-violet-950/20 px-4 py-3 ring-1 ring-inset ring-violet-500/10" role="region" aria-label="Local text model status">
+                    <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-violet-300/90">Model &amp; action</div>
+                    <div id="storyWorldMapGrokModalModelLabel" class="mt-1 font-semibold text-zinc-200"></div>
+                    <div id="storyWorldMapGrokModalStatusDetail" class="mt-2 text-sm text-zinc-400" role="status" aria-live="polite"></div>
+                </div>
                 <textarea id="storyWorldMapGrokModalPrompt" readonly rows="22" spellcheck="false" class="form-input story-world-map-prompt-text mt-4 min-h-[14rem] w-full resize-y rounded-xl border border-zinc-700/90 bg-zinc-900/80 px-4 py-3 text-sm leading-relaxed text-zinc-100 shadow-inner shadow-black/30 dark:border-zinc-700 dark:bg-zinc-900/80 dark:text-zinc-100" aria-label="Grok Imagine world map prompt"></textarea>
                 <div id="storyWorldMapGrokModalActions" class="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                     <button type="button" class="w-full rounded-xl bg-violet-600 px-6 py-3.5 text-base font-extrabold text-white shadow-lg shadow-violet-950/50 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:brightness-105 active:scale-[0.99] sm:w-auto" onclick="App.copyStoryWorldMapGrokModalPrompt()">Copy Prompt to Clipboard</button>
@@ -8333,12 +8806,12 @@ function createStorySetupWizardModal() {
         <div id="storySetupWizardModal" class="ai-settings-modal" onclick="if(event.target && event.target.id==='storySetupWizardModal'){ App.closeStorySetupWizard(); }">
             <div class="ai-settings-content h-[100vh] w-[100vw] max-h-none overflow-y-auto rounded-none border-0 bg-zinc-950 p-8 shadow-[0_32px_80px_-20px_rgba(0,0,0,0.85)] ring-0 sm:p-10">
                 <span class="modal-close text-zinc-500 hover:text-zinc-200" onclick="App.closeStorySetupWizard()">&times;</span>
-                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">Story Setup Wizard</div>
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">Story Wizard</div>
                 <h2 class="mt-2 text-3xl font-black tracking-tight text-zinc-50">Dan Harmon Story Circle</h2>
-                <p class="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-400">A calm, adaptive conversation with your local LLM. It asks follow-ups only when needed, then stages characters, beats, relationships, and work items for your review.</p>
+                <p class="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-400">Each beat includes guidance and where to grow your story in the planner. Your local LLM reads those answers, asks follow-ups only when needed, then stages characters, beats, relationships, and work items for your review.</p>
                 <div id="storySetupWizardBody" class="mt-6"></div>
                 <div class="mt-6 flex items-center justify-between gap-3 border-t border-zinc-800/80 pt-6">
-                    <button type="button" class="topbar-ghost" onclick="App.skipStorySetupWizard()">Skip Wizard</button>
+                    <button type="button" class="topbar-ghost" onclick="App.skipStorySetupWizard()">Skip story wizard</button>
                     <button type="button" class="topbar-ghost" onclick="App.closeStorySetupWizard()">Close</button>
                 </div>
             </div>

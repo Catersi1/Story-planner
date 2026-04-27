@@ -77,6 +77,8 @@ export function createTimelineEvent(overrides = {}) {
         involvedCharacterIds: [],
         isCanon: false,
         tags: [],
+        /** Optional Hero's Journey stage id: '1'…'12' (Campbell/Vogler), or null */
+        heroJourney: null,
         ...overrides
     };
 }
@@ -106,6 +108,14 @@ export function updateTimelineEvent(event, patch = {}) {
     }
     if (typeof next.isCanon !== 'boolean') {
         next.isCanon = false;
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'heroJourney')) {
+        if (next.heroJourney != null && next.heroJourney !== '') {
+            const hj = String(next.heroJourney);
+            next.heroJourney = /^([1-9]|1[0-2])$/.test(hj) ? hj : null;
+        } else {
+            next.heroJourney = null;
+        }
     }
     return /** @type {TimelineEvent} */ (next);
 }
@@ -486,7 +496,8 @@ export const StorageService = {
             nanoBananaApiKey: '',
             researchMode: 'both',
             deepResearchApiUrl: 'http://127.0.0.1:2024/research',
-            deepResearchApiKey: ''
+            deepResearchApiKey: '',
+            localGenerationTimeoutMinutes: 15
         };
     },
 
@@ -705,7 +716,8 @@ Return structured JSON matching our data models.
 Respect all items marked isCanon: true. Never contradict or delete canon information. Suggest new draft items instead.
 
 IMPORTANT:
-- Output ONLY valid JSON (no markdown, no code fences).
+- Output ONLY valid JSON: one object, no markdown fences, no commentary before or after.
+- If you need fewer items, use empty arrays [] — still return valid complete JSON.
 - Use this exact top-level shape:
 {
   "characters": [{"name": "...", "type": "friendly|antagonist|gray", "description": "..."}],
@@ -721,9 +733,72 @@ ${JSON.stringify(canonBrief, null, 2)}
 NOTES:
 ${notes}`;
 
-        const raw = await globalThis.AIService.callAI(prompt, 900);
+        const raw = await globalThis.AIService.callAI(prompt, 2400);
         const parsed = this.parsePossiblyWrappedJSON(raw);
         return this.normalizeImportedNotes(parsed);
+    },
+
+    /**
+     * First `{` … `}` span with string-aware brace balancing (avoids greedy lastIndexOf on nested content).
+     */
+    extractFirstBalancedJsonObject(text) {
+        const s = String(text || '');
+        const start = s.indexOf('{');
+        if (start === -1) return null;
+        let depth = 0;
+        let inString = false;
+        let escape = false;
+        for (let i = start; i < s.length; i++) {
+            const c = s[i];
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (inString) {
+                if (c === '\\') {
+                    escape = true;
+                    continue;
+                }
+                if (c === '"') inString = false;
+                continue;
+            }
+            if (c === '"') {
+                inString = true;
+                continue;
+            }
+            if (c === '{') depth++;
+            else if (c === '}') {
+                depth--;
+                if (depth === 0) return s.slice(start, i + 1);
+            }
+        }
+        return null;
+    },
+
+    /** Bodies of ```json ... ``` (or ``` ... ```) blocks that look like objects. */
+    extractMarkdownJsonFences(text) {
+        const re = /```(?:json)?\s*([\s\S]*?)```/gi;
+        const out = [];
+        let m;
+        while ((m = re.exec(text)) !== null) {
+            const inner = String(m[1] || '').trim();
+            if (inner.startsWith('{')) out.push(inner);
+        }
+        return out;
+    },
+
+    sanitizeJsonCandidate(s) {
+        let out = String(s || '').replace(/^\uFEFF/, '').trim();
+        out = out.replace(/[\u201c\u201d\u00ab\u00bb]/g, '"');
+        out = out.replace(/[\u2018\u2019]/g, "'");
+        let prev;
+        let guard = 0;
+        do {
+            prev = out;
+            out = out.replace(/,(\s*[}\]])/g, '$1');
+            guard++;
+        } while (out !== prev && guard < 20);
+        return out;
     },
 
     parsePossiblyWrappedJSON(rawText) {
@@ -732,24 +807,58 @@ ${notes}`;
             throw new Error('AI returned an empty response.');
         }
 
-        // Strip common markdown fences if they appear despite instructions.
+        const candidates = [];
+        for (const block of this.extractMarkdownJsonFences(raw)) {
+            candidates.push(block);
+        }
+
         let cleaned = raw
             .replace(/^```(?:json)?\s*/i, '')
             .replace(/```$/i, '')
             .trim();
+        if (cleaned && cleaned !== raw) candidates.push(cleaned);
 
-        // If response contains other text, try to extract the first JSON object.
+        const fromBalancedRaw = this.extractFirstBalancedJsonObject(raw);
+        if (fromBalancedRaw) candidates.push(fromBalancedRaw);
+        const fromBalancedCleaned = this.extractFirstBalancedJsonObject(cleaned);
+        if (fromBalancedCleaned && fromBalancedCleaned !== fromBalancedRaw) {
+            candidates.push(fromBalancedCleaned);
+        }
+
         const firstBrace = cleaned.indexOf('{');
         const lastBrace = cleaned.lastIndexOf('}');
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-            cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+            candidates.push(cleaned.slice(firstBrace, lastBrace + 1));
         }
 
-        try {
-            return JSON.parse(cleaned);
-        } catch (error) {
-            throw new Error('Could not parse JSON from AI response. Try simplifying notes or re-run.');
+        const seen = new Set();
+        const uniq = [];
+        for (const c of candidates) {
+            const t = String(c || '').trim();
+            if (!t || seen.has(t)) continue;
+            seen.add(t);
+            uniq.push(t);
         }
+
+        const tryParse = (str) => JSON.parse(str);
+
+        for (const c of uniq) {
+            try {
+                return tryParse(c);
+            } catch (e) {
+                /* continue */
+            }
+            try {
+                return tryParse(this.sanitizeJsonCandidate(c));
+            } catch (e2) {
+                /* continue */
+            }
+        }
+
+        console.warn('parsePossiblyWrappedJSON: could not parse. Response preview:', raw.slice(0, 800));
+        throw new Error(
+            'Could not parse JSON from AI response. The model may have added extra text, truncated output, or used invalid JSON. Try again, shorten the notes, or use a model that follows JSON-only instructions.'
+        );
     },
 
     normalizeImportedNotes(obj) {

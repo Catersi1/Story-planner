@@ -12,6 +12,18 @@ export const AIService = {
     _defaultTimeoutMs: 15000,
 
     /**
+     * LM Studio / Ollama chat completions can take minutes (model load, CPU, large max_tokens).
+     * Value comes from AI Settings (minutes), clamped 1–120.
+     */
+    getLocalGenerationTimeoutMs() {
+        const minutes = Number(this.settings?.localGenerationTimeoutMinutes);
+        const clamped = Number.isFinite(minutes)
+            ? Math.min(120, Math.max(1, Math.round(minutes)))
+            : 15;
+        return clamped * 60 * 1000;
+    },
+
+    /**
      * Fetch wrapper with AbortController timeout.
      * Local model servers can hang indefinitely (especially when a model is loading),
      * so we enforce a UI-safe timeout and surface a useful error.
@@ -151,7 +163,7 @@ export const AIService = {
     },
 
     /**
-     * Story Setup Wizard (Dan Harmon Story Circle) — adaptive follow-ups.
+     * Story Wizard (Dan Harmon Story Circle) — adaptive follow-ups.
      * Returns either:
      * - { mode: 'followups', questions: string[], raw }
      * - { mode: 'ready', payload: { characters, timelineBeats, relationships, workItems }, raw }
@@ -180,18 +192,23 @@ You are helping a military veteran author build a realistic time-travel C-drama.
 
 We are using Dan Harmon’s Story Circle to set up the story.
 
-Current answers so far:
+Read carefully — the user may have skipped beats; treat empty beats as unknown, not contradictions.
+
+Current Story Circle + follow-up answers (each entry is what the user saved; use all of it):
 ${JSON.stringify(list, null, 2)}
 
-Existing story data (may be partially filled; respect canon protections):
+Existing story JSON (may be partially filled; respect canon / isCanon; do not invent facts that contradict it):
 ${JSON.stringify(storyData || {}, null, 2)}
 
-Follow-up history (avoid repeats):
+Follow-up questions already asked in this wizard (do not repeat or paraphrase the same ask):
 ${JSON.stringify(history || [], null, 2)}
 
-Ask 1 smart, focused follow-up question only if you genuinely need more context on critical elements (Feng’s military mindset as a 38-year-old veteran, time-travel rules, character motivations, relationships, Tang Dynasty realism, show-don’t-tell opportunities, or potential plot holes).
+If you still need clarification before staging content, output ONLY valid JSON (no markdown, no prose) with 1 to 3 short, specific questions:
+{ "followUpQuestions": ["question 1", "question 2?"] }
+Use fewer questions when one would do; use up to 3 only when separate gaps need separate answers (e.g. time-travel rules vs. one relationship). Focus on critical gaps: military/veteran mindset, time-travel rules, motivations, relationships, Tang-era realism, or plot holes.
 
-If you have enough information, say exactly: 'READY_TO_POPULATE' and then output JSON ONLY (no markdown) with this schema:
+If you have enough information to propose staged additions, say exactly: READY_TO_POPULATE
+Then on the same response, output JSON ONLY (no markdown) with this schema:
 {
   "characters": [{ "name": "string", "type": "friendly|antagonist|gray", "description": "string", "isCanon": true }],
   "timelineBeats": [{ "title": "string", "order": 0, "beat": "1-8", "description": "short visual description", "location": "one of allowedLocations", "isCanon": true }],
@@ -202,12 +219,9 @@ If you have enough information, say exactly: 'READY_TO_POPULATE' and then output
 allowedLocations:
 ${JSON.stringify(allowedLocations)}
 
-Be concise, focused, and helpful. Prioritize realism and the user’s canon (Feng is late 30s military veteran, etc.).
+Be concise. Prioritize realism and the user’s canon (protagonist as late-30s military veteran when that appears in the data).
 
-If you need more information, output ONLY JSON with schema:
-{ "followUpQuestions": ["one question"] }
-
-Do not output anything else.
+Do not output anything except either (A) ONLY the followUpQuestions JSON object, or (B) READY_TO_POPULATE plus the staging JSON.
         `.trim();
 
         const raw = await this.callAI(systemPrompt, 1200);
@@ -230,11 +244,11 @@ Do not output anything else.
         try {
             const parsed = JSON.parse(text);
             const qs = Array.isArray(parsed?.followUpQuestions) ? parsed.followUpQuestions : [];
-            return { mode: 'followups', questions: qs.map(q => String(q || '').trim()).filter(Boolean).slice(0, 1), raw: text };
+            return { mode: 'followups', questions: qs.map(q => String(q || '').trim()).filter(Boolean).slice(0, 3), raw: text };
         } catch (e) {
-            // Last resort: treat as a single follow-up question.
+            // Last resort: treat non-JSON lines as up to 3 follow-up questions.
             const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
-            return { mode: 'followups', questions: lines.slice(0, 1), raw: text };
+            return { mode: 'followups', questions: lines.slice(0, 3), raw: text };
         }
     },
 
@@ -352,8 +366,7 @@ Do not output anything else.
                     headers,
                     body
                 },
-                // Larger generations can take a bit; still avoid "hang forever".
-                Math.max(this._defaultTimeoutMs, 25000)
+                this.getLocalGenerationTimeoutMs()
             );
 
             if (!response.ok) {
@@ -413,7 +426,7 @@ Do not output anything else.
                 throw new Error('Browser could not reach the local AI API (likely CORS). Enable CORS/browser access in LM Studio Local Server settings.');
             }
             if (typeof error?.message === 'string' && error.message.toLowerCase().includes('timed out')) {
-                throw new Error('Local AI request timed out. Your model server may be loading or stuck. Try “Test Connection” in AI Settings, or restart LM Studio / Ollama.');
+                throw new Error('Local AI request timed out. In AI Settings, raise “Local text AI timeout (minutes)” if your model is slow, use Test Connection, or restart LM Studio / Ollama.');
             }
             throw error;
         }
@@ -569,13 +582,17 @@ ${JSON.stringify(canon, null, 2)}`;
      * Uses the configured **text** AI (LM Studio / Ollama) to expand the draft into a single copy-paste Grok Imagine prompt.
      * Falls back to {@link buildStoryWorldMapGrokPrompt} if the service is offline or the call fails.
      * @param {object} storyData
-     * @returns {Promise<string>}
+     * @returns {Promise<{ text: string, mode: 'ai'|'offline'|'empty'|'error', userMessage: string }>}
      */
     async generateStoryWorldMapGrokPromptDetailed(storyData) {
         const draft = this.buildStoryWorldMapGrokPrompt(storyData);
         await this.checkConnection();
         if (!this.connected) {
-            return draft;
+            return {
+                text: draft,
+                mode: 'offline',
+                userMessage: 'Text AI not connected — using built-in draft. Connect in AI Settings to expand with your model.'
+            };
         }
 
         const instructions = `You write ONE final image-generation prompt for **Grok Imagine** (or similar). Output **plain text only** — no markdown fences, no title line like "Here is the prompt", no bullet markdown — just the prompt itself.
@@ -597,11 +614,33 @@ ${draft}`;
 
         try {
             const out = String(await this.callAI(instructions, 2200) || '').trim();
-            return out || draft;
+            if (out) {
+                return {
+                    text: out,
+                    mode: 'ai',
+                    userMessage: 'Prompt expanded by your local text AI. Copy below when ready.'
+                };
+            }
+            return {
+                text: draft,
+                mode: 'empty',
+                userMessage: 'Model returned empty text — using built-in draft.'
+            };
         } catch (error) {
             console.warn('generateStoryWorldMapGrokPromptDetailed:', error);
-            return draft;
+            return {
+                text: draft,
+                mode: 'error',
+                userMessage: String(error?.message || error || 'Request failed.')
+            };
         }
+    },
+
+    /** Short label for UI: platform + active model name. */
+    getLocalTextAiSummary() {
+        const plat = this.settings?.platform === 'ollama' ? 'Ollama' : 'LM Studio';
+        const model = this.getActiveModel() || '(no model — set in AI Settings)';
+        return `${plat} · ${model}`;
     },
 
     /**
