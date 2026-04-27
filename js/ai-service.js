@@ -708,6 +708,568 @@ ${castSnap || '(none)'}`;
     },
 
     /**
+     * Full integrity check using the local **text** AI (LM Studio / Ollama).
+     * Returns JSON so the app can render sections + apply safe fix actions.
+     * @param {object} storyData
+     * @returns {Promise<string>} raw JSON string (model output)
+     */
+    async runFullStoryIntegrityCheck(storyData) {
+        const safeArr = (x) => Array.isArray(x) ? x : [];
+        const safeStr = (x) => (typeof x === 'string' ? x : (x == null ? '' : String(x)));
+
+        const masterText = safeStr(storyData?.masterDocument?.text);
+        const masterExcerpt = masterText.length > 6000
+            ? masterText.slice(-6000)
+            : masterText;
+
+        const payload = {
+            meta: {
+                now: new Date().toISOString(),
+                app: 'AI story builder',
+                note: 'Full snapshot for integrity check'
+            },
+            characters: safeArr(storyData?.characters).map((c) => ({
+                id: c.id,
+                name: c.name,
+                age: c.age,
+                role: c.role,
+                type: c.type,
+                background: c.background,
+                personality: c.personality,
+                notes: c.notes,
+                relatedCharacters: safeArr(c.relatedCharacters),
+                isCanon: Boolean(c.isCanon),
+                tags: safeArr(c.tags)
+            })),
+            timeline: safeArr(storyData?.events)
+                .slice()
+                .sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0) || (Number(a?.id) || 0) - (Number(b?.id) || 0))
+                .map((e) => ({
+                    id: e.id,
+                    order: e.order,
+                    title: e.title,
+                    period: e.period,
+                    beat: e.beat,
+                    location: e.location,
+                    description: e.description,
+                    fullDescription: e.fullDescription,
+                    involvedCharacterIds: safeArr(e.involvedCharacterIds),
+                    isCanon: Boolean(e.isCanon),
+                    tags: safeArr(e.tags)
+                })),
+            workItems: safeArr(storyData?.workItems).map((w) => ({
+                id: w.id,
+                title: w.title,
+                category: w.category,
+                completed: Boolean(w.completed),
+                isCanon: Boolean(w.isCanon),
+                tags: safeArr(w.tags)
+            })),
+            relationships: safeArr(storyData?.relationships).map((r) => ({
+                from: r.from,
+                to: r.to,
+                type: r.type,
+                description: r.description
+            })),
+            plot: safeArr(storyData?.plot).map((p) => ({ act: p.act, content: p.content })),
+            politics: safeArr(storyData?.politics).map((p) => ({ section: p.section, content: p.content })),
+            masterDocument: {
+                updatedAt: storyData?.masterDocument?.updatedAt || null,
+                excerpt: masterExcerpt
+            }
+        };
+
+        const systemPrompt = `Act as an expert C-drama story editor with deep knowledge of Tang Dynasty history, military logistics, time-travel realism, and 'show-don't-tell' storytelling.
+
+Analyze the full story data provided for:
+- Timeline continuity & realistic time passage (pregnancies, seasons, aging)
+- Character consistency (motivations, arcs, relationships, age/class realism)
+- Canon protection violations
+- Plot holes or logical inconsistencies
+- Military & logistics realism (Feng is a 38-year-old veteran — no superhero nonsense)
+- Female modesty / period-appropriate behavior
+- Environmental storytelling opportunities
+- Any contradictions with the user's latest canon notes
+
+Return a structured report with:
+1. Critical Issues (red)
+2. Minor Issues / Improvements (yellow)
+3. Strong Points
+4. Specific Suggestions (with exact fixes)
+
+Be ruthless but constructive. Prioritize realism and consistency.`;
+
+        const schema = `Return ONLY valid JSON (no markdown, no code fences). Use this exact schema:
+{
+  "criticalIssues": [
+    {
+      "title": "short issue title",
+      "details": "what is wrong and why it breaks realism/continuity",
+      "evidence": ["quotes or pointers to specific events/characters/work items"],
+      "affected": { "characterIds": [1], "eventIds": [1], "workItemIds": [1] },
+      "fix": "precise fix text"
+    }
+  ],
+  "minorIssues": [
+    {
+      "title": "short improvement",
+      "details": "what to improve",
+      "affected": { "characterIds": [1], "eventIds": [1], "workItemIds": [1] },
+      "fix": "precise fix text"
+    }
+  ],
+  "strongPoints": ["..."],
+  "specificSuggestions": [
+    {
+      "title": "actionable suggestion",
+      "details": "how to implement",
+      "affected": { "characterIds": [1], "eventIds": [1], "workItemIds": [1] }
+    }
+  ],
+  "fixActions": [
+    {
+      "actionType": "add_work_item|flag_event",
+      "title": "short title",
+      "category": "Story Integrity|Historical Research|Continuity",
+      "details": "what to do / why",
+      "eventId": 123,
+      "eventTitle": "optional fallback title",
+      "tags": ["integrity", "draft"]
+    }
+  ],
+  "summary": {
+    "verdict": "1-2 sentence overall verdict",
+    "topRisks": ["..."],
+    "topNextSteps": ["..."]
+  },
+  "queueTasks": [
+    {
+      "title": "actionable task/question",
+      "description": "one short line",
+      "priority": "High|Medium",
+      "actionHint": "timeline|work_item|expand"
+    }
+  ]
+}
+
+Rules:
+- If you reference an event/character/work item, include its id in affected.*.
+- fixActions must be ONLY safe automations: (1) add a work item, (2) flag an existing event for review.
+- queueTasks: extract 4–8 ruthless, Feng-style next-step QUESTIONS/TASKS.
+  Prefer prompts that force concrete show-don't-tell decisions (logistics, discipline, rank etiquette, timing, consequences).
+- NEVER overwrite canon (isCanon:true) content; propose changes as draft notes/work items only.`;
+
+        const prompt = `${systemPrompt}
+
+${this.getCanonGuardrail(storyData)}
+
+${schema}
+
+STORY_DATA_JSON:
+${JSON.stringify(payload, null, 2)}`;
+
+        return this.callAI(prompt, 1800);
+    },
+
+    /**
+     * Tang Dynasty (720 AD, Kaiyuan era) historical accuracy check using local **text** AI (LM Studio / Ollama).
+     * Returns JSON for clean section rendering + copy.
+     * @param {object} storyData
+     * @returns {Promise<string>} raw JSON string (model output)
+     */
+    async runHistoricalTangAccuracyCheck(storyData) {
+        const safeArr = (x) => Array.isArray(x) ? x : [];
+        const safeStr = (x) => (typeof x === 'string' ? x : (x == null ? '' : String(x)));
+
+        const masterText = safeStr(storyData?.masterDocument?.text);
+        const masterExcerpt = masterText.length > 8000
+            ? masterText.slice(-8000)
+            : masterText;
+
+        const payload = {
+            meta: {
+                now: new Date().toISOString(),
+                targetEra: 'Tang Dynasty, 720 AD (Kaiyuan era)',
+                note: 'Full snapshot for historical Tang accuracy check'
+            },
+            characters: safeArr(storyData?.characters).map((c) => ({
+                id: c.id,
+                name: c.name,
+                age: c.age,
+                role: c.role,
+                type: c.type,
+                background: c.background,
+                personality: c.personality,
+                notes: c.notes,
+                relatedCharacters: safeArr(c.relatedCharacters),
+                isCanon: Boolean(c.isCanon),
+                tags: safeArr(c.tags)
+            })),
+            timeline: safeArr(storyData?.events)
+                .slice()
+                .sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0) || (Number(a?.id) || 0) - (Number(b?.id) || 0))
+                .map((e) => ({
+                    id: e.id,
+                    order: e.order,
+                    title: e.title,
+                    period: e.period,
+                    beat: e.beat,
+                    location: e.location,
+                    description: e.description,
+                    fullDescription: e.fullDescription,
+                    involvedCharacterIds: safeArr(e.involvedCharacterIds),
+                    isCanon: Boolean(e.isCanon),
+                    tags: safeArr(e.tags)
+                })),
+            workItems: safeArr(storyData?.workItems).map((w) => ({
+                id: w.id,
+                title: w.title,
+                category: w.category,
+                completed: Boolean(w.completed),
+                isCanon: Boolean(w.isCanon),
+                tags: safeArr(w.tags)
+            })),
+            relationships: safeArr(storyData?.relationships).map((r) => ({
+                from: r.from,
+                to: r.to,
+                type: r.type,
+                description: r.description
+            })),
+            plot: safeArr(storyData?.plot).map((p) => ({ act: p.act, content: p.content })),
+            politics: safeArr(storyData?.politics).map((p) => ({ section: p.section, content: p.content })),
+            masterDocument: {
+                updatedAt: storyData?.masterDocument?.updatedAt || null,
+                excerpt: masterExcerpt
+            }
+        };
+
+        const systemPrompt = `Act as a strict Tang Dynasty (720 AD, Kaiyuan era) historical consultant and C-drama authenticity editor.
+
+Analyze the entire story for historical accuracy against real Tang Dynasty facts:
+- Clothing, architecture, court etiquette, social hierarchy, and female modesty norms
+- Military structure, weapons, tactics, and logistics (no anachronistic modern tactics unless explained as Feng's innovations)
+- Technology level (what was actually possible in 720 AD vs what Feng introduces)
+- Daily life, food, medicine, trade, transportation, and noble life
+- Realism of time passage, pregnancies, relationships, and aging
+- Any contradictions with the user's canon (Feng is 38, military veteran, realistic characters, show-don't-tell)
+
+Return a structured report with:
+1. Critical Anachronisms / Historical Errors (red)
+2. Minor Inaccuracies or Improvements (yellow)
+3. Period-Accurate Strengths
+4. Specific, actionable suggestions (with exact fixes where possible)
+
+Be extremely precise and ruthless about realism. Prioritize Tang Dynasty accuracy while respecting the time-travel modernization theme.`;
+
+        const schema = `Return ONLY valid JSON (no markdown, no code fences). Use this exact schema:
+{
+  "criticalAnachronisms": [
+    {
+      "title": "short error title",
+      "details": "why it is wrong for 720 AD Tang",
+      "historicalNote": "brief correct fact/constraint",
+      "evidence": ["pointers to specific events/characters/work items"],
+      "affected": { "characterIds": [1], "eventIds": [1], "workItemIds": [1] },
+      "exactFix": "rewrite / replacement phrasing or concrete change"
+    }
+  ],
+  "minorInaccuracies": [
+    {
+      "title": "short improvement",
+      "details": "what is off",
+      "historicalNote": "brief correct context",
+      "affected": { "characterIds": [1], "eventIds": [1], "workItemIds": [1] },
+      "exactFix": "concrete fix"
+    }
+  ],
+  "periodAccurateStrengths": [
+    {
+      "title": "what is accurate",
+      "details": "why it matches Tang reality",
+      "evidence": ["optional pointers"],
+      "affected": { "characterIds": [1], "eventIds": [1] }
+    }
+  ],
+  "actionableSuggestions": [
+    {
+      "title": "actionable suggestion",
+      "details": "what to add/change",
+      "exactFix": "optional exact line/prop/costume/etiquette replacement",
+      "affected": { "characterIds": [1], "eventIds": [1], "workItemIds": [1] }
+    }
+  ],
+  "summary": {
+    "verdict": "1-2 sentence verdict",
+    "topHistoricalRisks": ["..."],
+    "topFixes": ["..."]
+  },
+  "queueTasks": [
+    {
+      "title": "actionable historical task/question",
+      "description": "one short line",
+      "priority": "High|Medium",
+      "actionHint": "work_item|timeline|expand"
+    }
+  ]
+}
+
+Rules:
+- Anchor to 720 AD Kaiyuan era norms unless the story explicitly time-jumps.
+- Respect time-travel modernization: if Feng introduces something advanced, call out required constraints (materials, fabrication, training, adoption timeline).
+- queueTasks: extract 4–8 high-quality historical realism QUESTIONS/TASKS the user can answer as Feng.
+  Prefer concrete show-don't-tell scene prompts, not vague research prompts.
+- Never overwrite canon (isCanon:true). Propose fixes as draft notes/suggestions only.`;
+
+        const prompt = `${systemPrompt}
+
+${this.getCanonGuardrail(storyData)}
+
+${schema}
+
+STORY_DATA_JSON:
+${JSON.stringify(payload, null, 2)}`;
+
+        return this.callAI(prompt, 1800);
+    },
+
+    /**
+     * Generate a living "Master Script / Series Treatment" via local **text** AI (LM Studio / Ollama).
+     * Returns markdown text (not JSON).
+     * @param {object} storyData
+     * @returns {Promise<string>}
+     */
+    async generateMasterScript(storyData) {
+        const safeArr = (x) => Array.isArray(x) ? x : [];
+        const safeStr = (x) => (typeof x === 'string' ? x : (x == null ? '' : String(x)));
+
+        const masterText = safeStr(storyData?.masterDocument?.text);
+        const masterExcerpt = masterText.length > 7000 ? masterText.slice(-7000) : masterText;
+
+        const payload = {
+            meta: {
+                now: new Date().toISOString(),
+                title: safeStr(storyData?.title || 'Ghost Border'),
+                note: 'Full snapshot for Master Script generation'
+            },
+            characters: safeArr(storyData?.characters).map((c) => ({
+                id: c.id,
+                name: c.name,
+                age: c.age,
+                role: c.role,
+                type: c.type,
+                background: c.background,
+                personality: c.personality,
+                notes: c.notes,
+                relatedCharacters: safeArr(c.relatedCharacters),
+                isCanon: Boolean(c.isCanon),
+                tags: safeArr(c.tags)
+            })),
+            timeline: safeArr(storyData?.events)
+                .slice()
+                .sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0) || (Number(a?.id) || 0) - (Number(b?.id) || 0))
+                .map((e) => ({
+                    id: e.id,
+                    order: e.order,
+                    title: e.title,
+                    period: e.period,
+                    beat: e.beat,
+                    location: e.location,
+                    description: e.description,
+                    fullDescription: e.fullDescription,
+                    involvedCharacterIds: safeArr(e.involvedCharacterIds),
+                    isCanon: Boolean(e.isCanon),
+                    tags: safeArr(e.tags)
+                })),
+            workItems: safeArr(storyData?.workItems).map((w) => ({
+                id: w.id,
+                title: w.title,
+                category: w.category,
+                completed: Boolean(w.completed),
+                isCanon: Boolean(w.isCanon),
+                tags: safeArr(w.tags)
+            })),
+            relationships: safeArr(storyData?.relationships).map((r) => ({
+                from: r.from,
+                to: r.to,
+                type: r.type,
+                description: r.description
+            })),
+            plot: safeArr(storyData?.plot).map((p) => ({ act: p.act, content: p.content })),
+            politics: safeArr(storyData?.politics).map((p) => ({ section: p.section, content: p.content })),
+            masterDocument: {
+                updatedAt: storyData?.masterDocument?.updatedAt || null,
+                excerpt: masterExcerpt
+            }
+        };
+
+        const systemPrompt = `You are an expert C-drama showrunner and story editor.
+
+Generate a complete, professional **Master Script / Series Treatment** based on the current story data.
+
+Structure the output exactly like this:
+
+**MASTER SCRIPT – GHOST BORDER**
+
+**Logline:** [One powerful sentence]
+
+**Series Overview:** [2–3 paragraphs summarizing the full story arc, tone, themes, and current state]
+
+**Main Characters & Arcs:** 
+- Name (age/status): Short arc description + current role
+
+**Current Timeline / Beat Summary:** 
+List all timeline events chronologically with short, vivid one-line visual summaries.
+
+**Key Themes & Visual Style:** 
+- Major themes
+- Color and visual evolution
+- Historical Tang accuracy notes
+
+**Current Continuity & Risks:** 
+- What is working well
+- Any open questions, plot holes, or canon violations
+
+**Suggested Next 3 Beats:** 
+Give 3 specific, actionable next beats that respect all canon rules (Feng late 30s military veteran, realistic time passage, show-don’t-tell, military realism, period-appropriate behavior, etc.).
+
+Be insightful, concise, and focused on the larger picture. Update this document every time the data changes.`;
+
+        const prompt = `${systemPrompt}
+
+${this.getCanonGuardrail(storyData)}
+
+Output rules:
+- Output markdown only (no code fences).
+- Keep headings/bullets exactly as requested.
+- Keep the timeline list in story order.
+- Do not invent new canon. If you propose future beats, mark them as draft suggestions in the "Suggested Next 3 Beats" section.
+
+STORY_DATA_JSON:
+${JSON.stringify(payload, null, 2)}`;
+
+        return this.callAI(prompt, 2000);
+    },
+
+    /**
+     * Process a pasted voice memo transcription into structured story material (local text AI).
+     * Returns JSON so UI can apply suggested actions.
+     * @param {object} storyData
+     * @param {string} memoText
+     * @param {object} options
+     * @param {string} options.issuesContext - optional extracted issues/flags to reference
+     * @returns {Promise<string>}
+     */
+    async processVoiceMemo(storyData, memoText, { issuesContext = '' } = {}) {
+        const safeArr = (x) => Array.isArray(x) ? x : [];
+        const safeStr = (x) => (typeof x === 'string' ? x : (x == null ? '' : String(x)));
+
+        const memo = safeStr(memoText).trim();
+        if (!memo) {
+            throw new Error('Paste a voice memo transcription first.');
+        }
+
+        const masterText = safeStr(storyData?.masterDocument?.text);
+        const masterExcerpt = masterText.length > 6000 ? masterText.slice(-6000) : masterText;
+
+        const payload = {
+            meta: {
+                now: new Date().toISOString(),
+                note: 'Voice memo processing request'
+            },
+            memoTranscription: memo,
+            story: {
+                characters: safeArr(storyData?.characters).map((c) => ({
+                    id: c.id, name: c.name, age: c.age, role: c.role, type: c.type,
+                    background: c.background, personality: c.personality, notes: c.notes,
+                    relatedCharacters: safeArr(c.relatedCharacters), isCanon: Boolean(c.isCanon), tags: safeArr(c.tags)
+                })),
+                timeline: safeArr(storyData?.events)
+                    .slice()
+                    .sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0) || (Number(a?.id) || 0) - (Number(b?.id) || 0))
+                    .map((e) => ({
+                        id: e.id, order: e.order, title: e.title, period: e.period, beat: e.beat,
+                        location: e.location, description: e.description, fullDescription: e.fullDescription,
+                        involvedCharacterIds: safeArr(e.involvedCharacterIds), isCanon: Boolean(e.isCanon), tags: safeArr(e.tags)
+                    })),
+                workItems: safeArr(storyData?.workItems).map((w) => ({
+                    id: w.id, title: w.title, category: w.category, completed: Boolean(w.completed),
+                    isCanon: Boolean(w.isCanon), tags: safeArr(w.tags)
+                })),
+                relationships: safeArr(storyData?.relationships).map((r) => ({
+                    id: r.id, fromId: r.fromId, toId: r.toId, from: r.from, to: r.to,
+                    type: r.type, label: r.label, description: r.description,
+                    strength: r.strength, secret: Boolean(r.secret)
+                })),
+                plot: safeArr(storyData?.plot).map((p) => ({ act: p.act, content: p.content })),
+                politics: safeArr(storyData?.politics).map((p) => ({ section: p.section, content: p.content })),
+                masterDocument: { updatedAt: storyData?.masterDocument?.updatedAt || null, excerpt: masterExcerpt }
+            },
+            issuesContext: safeStr(issuesContext).trim()
+        };
+
+        const systemPrompt = `You are helping a military veteran author who is role-playing as Feng (late 30s logistics veteran, pragmatic, scarred, no-nonsense).
+
+Take the spoken voice memo below and turn it into usable story material.
+
+Focus on:
+- Turning spoken tactical/veteran thinking into concrete 'show-don't-tell' actions and visual beats
+- Addressing any continuity, historical, or realism issues previously flagged by the Story Integrity or Tang Accuracy checker
+- Expanding ideas into timeline events, work items, character moments, or scene descriptions
+- Keeping everything realistic, period-appropriate, and consistent with canon
+
+Return a clean, structured response with sections:
+1. Key Insights from the Memo
+2. Suggested New/Updated Timeline Beats
+3. Suggested Work Items or Character Moments
+4. Any Fixes for Flagged Issues
+
+Voice memo transcription:
+[insert pasted text here]`;
+
+        const schema = `Return ONLY valid JSON (no markdown, no code fences). Use this exact schema:
+{
+  "keyInsights": ["..."],
+  "fixesForFlaggedIssues": ["..."],
+  "queueTasks": [
+    {
+      "title": "concrete expansion task",
+      "description": "one short line",
+      "priority": "High|Medium",
+      "actionHint": "timeline|work_item|expand"
+    }
+  ],
+  "suggestedActions": [
+    {
+      "actionType": "timeline_event|work_item|character_arc_update",
+      "title": "...",
+      "description": "...",
+      "relatedTo": ["Character:Name", "Event:Title", "Politics:Section"],
+      "tags": ["voice-memo", "draft"]
+    }
+  ]
+}
+
+Rules:
+- Never overwrite canon. All suggestions are draft.
+- Prefer concrete, cinematic beats over abstract advice.
+- If you reference an existing event, keep its title consistent.
+- Keep suggestedActions to ~6–18 items total.
+- queueTasks: extract 4–8 Feng-style QUESTIONS/TASKS from the memo that the user can answer out loud later.
+  Must be concrete, show-don’t-tell prompts (tactical choices, logistics constraints, status etiquette, consequences).`;
+
+        const prompt = `${systemPrompt}
+
+${this.getCanonGuardrail(storyData)}
+
+${schema}
+
+INPUT_JSON:
+${JSON.stringify(payload, null, 2)}`;
+
+        return this.callAI(prompt, 1200);
+    },
+
+    /**
      * Cross-check recent AI reports + current story data; return JSON with `issuesFound` and `suggestedActions`
      * (same suggestedActions shape as full story analysis) for App to save and apply.
      * @param {object} storyData

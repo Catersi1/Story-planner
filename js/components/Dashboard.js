@@ -246,6 +246,26 @@ export function renderDashboard() {
 
         <div class="mt-8 border-t border-zinc-800/90 pt-8">
           <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-5 py-4 text-left text-sm font-extrabold text-white shadow-[0_18px_60px_-14px_rgba(91,33,182,0.85)] ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_40px_-6px_rgba(139,92,246,0.75)] active:scale-[0.99] md:col-span-2" onclick="App.generateOrUpdateMasterScript()">
+              <span class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-violet-100/90">Big picture</span>
+              <span class="mt-1.5 block text-base font-black tracking-tight text-white">📄 Generate / Update Master Script</span>
+              <span class="mt-2 block text-xs font-semibold leading-relaxed text-violet-100/80">Living series treatment: logline, overview, arcs, chronological beat recap, visual style, risks, and next 3 beats.</span>
+            </button>
+            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-5 py-4 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/50 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_34px_-6px_rgba(139,92,246,0.65)] active:scale-[0.99] md:col-span-2" onclick="App.openVoiceMemoModal()">
+              <span class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-violet-100/90">Voice memo</span>
+              <span class="mt-1.5 block text-base font-black tracking-tight text-white">🎙️ Process Spoken Idea / Voice Memo</span>
+              <span class="mt-2 block text-xs font-semibold leading-relaxed text-violet-100/80">Paste a phone transcription → get structured beats, tasks, and fixes you can apply in one click.</span>
+            </button>
+            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-5 py-4 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/50 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_34px_-6px_rgba(139,92,246,0.65)] active:scale-[0.99] md:col-span-2" onclick="App.runFullStoryIntegrityCheck()">
+              <span class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-violet-100/90">Integrity</span>
+              <span class="mt-1.5 block text-base font-black tracking-tight text-white">🛡️ Run Full Story Integrity Check</span>
+              <span class="mt-2 block text-xs font-semibold leading-relaxed text-violet-100/80">Ruthless realism pass: continuity, canon protection, Tang-era behavior, logistics, contradictions with your master notes.</span>
+            </button>
+            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-5 py-4 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/50 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_34px_-6px_rgba(139,92,246,0.65)] active:scale-[0.99] md:col-span-2" onclick="App.runHistoricalTangAccuracyCheck()">
+              <span class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-violet-100/90">History</span>
+              <span class="mt-1.5 block text-base font-black tracking-tight text-white">🏮 Run Historical Tang Accuracy Check</span>
+              <span class="mt-2 block text-xs font-semibold leading-relaxed text-violet-100/80">Kaiyuan era (720 AD) pass: anachronisms, etiquette, hierarchy, tech level, logistics, daily life. Ruthless realism.</span>
+            </button>
             <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-4 py-3.5 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)] active:scale-[0.99]" onclick="App.analyzeStory()">Full story analysis</button>
             <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-4 py-3.5 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)] active:scale-[0.99]" onclick="App.analyzeContinuity()">Continuity</button>
             <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-4 py-3.5 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)] active:scale-[0.99]" onclick="App.analyzeCharacters()">Characters</button>

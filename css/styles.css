@@ -306,6 +306,33 @@ body:not([data-theme="light"]) .topbar {
     transform: none;
 }
 
+.sidebar-ai-section details > summary {
+    outline: none;
+}
+
+/* More compact AI section entries (calmer, less visual weight) */
+.sidebar .sidebar-ai-section .tab-button {
+    padding: 0.45rem 0.75rem 0.45rem 0.55rem;
+    font-size: 0.85rem;
+    font-weight: 700;
+    opacity: 0.95;
+}
+
+.sidebar .sidebar-ai-section .sidebar-nav-icon {
+    width: 1.95rem;
+    height: 1.95rem;
+    font-size: 1rem;
+}
+
+/* Queue sidebar panel: collapsed by default */
+#aiQueueSidebarPanel {
+    margin-top: 0.35rem;
+}
+
+#aiQueueSidebarPanel:not([open]) #aiQueueSidebarList {
+    display: none;
+}
+
 .sidebar .sidebar-nav .tab-button:hover {
     background: rgb(39 39 42);
     border-left-color: transparent;

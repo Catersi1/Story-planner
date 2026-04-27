@@ -216,6 +216,10 @@ const App = {
             { id: 'analyze-story', label: 'Analyze Story', run: () => { this.switchTab('dashboard'); this.analyzeStory(); } },
             { id: 'suggest-story-build', label: 'Suggest story builds from issues', run: () => { this.switchTab('dashboard'); this.suggestStoryBuildFromIssues(); } },
             { id: 'analyze-history', label: 'Check historical accuracy', run: () => { this.switchTab('dashboard'); this.analyzeHistoricalAccuracy(); } },
+            { id: 'integrity-check', label: 'Run Full Story Integrity Check', run: () => { this.switchTab('dashboard'); this.runFullStoryIntegrityCheck(); } },
+            { id: 'tang-accuracy', label: 'Run Historical Tang Accuracy Check', run: () => { this.switchTab('dashboard'); this.runHistoricalTangAccuracyCheck(); } },
+            { id: 'master-script', label: 'Generate / Update Master Script', run: () => { this.switchTab('dashboard'); this.generateOrUpdateMasterScript(); } },
+            { id: 'voice-memo', label: 'Process Spoken Idea / Voice Memo', run: () => { this.switchTab('dashboard'); this.openVoiceMemoModal(); } },
             { id: 'gen-master', label: 'Generate Master Document', run: () => { this.switchTab('master-document'); this.regenerateMasterDocument(); } },
             { id: 'import-notes', label: 'Import Notes', run: () => { this.switchTab('dashboard'); this.openImportNotesModal(); } }
         ];
@@ -609,6 +613,10 @@ const App = {
             this.renderVisualGallery();
             this.renderStoryLocationsOverview();
             this.renderStoryWorldMap();
+            this.renderRelationshipNetworkGraph();
+        }
+        if (tabName === 'ai-queue') {
+            this.renderAIExpansionQueue();
         }
         if (tabName === 'templates') {
             this.renderTemplates();
@@ -646,8 +654,11 @@ const App = {
         this.renderStoryboard();
         this.renderVisualGallery();
         this.renderStoryWorldMap();
+        this.renderRelationshipNetworkGraph();
+        this.renderCharacterArcTracker();
         this.renderMasterDocument();
         this.updateGlobalChipUI();
+        this.renderQueueSidebarPanel();
     },
 
     renderCanonStatusIndicator() {
@@ -2378,6 +2389,22 @@ const App = {
         const to = this.storyData.characters.find(c => c.id === this.relationshipDraft.toId);
         if (!from || !to) return;
 
+        // Persist structured relationship for Relationship Network Graph.
+        this.storyData.relationships = Array.isArray(this.storyData.relationships) ? this.storyData.relationships : [];
+        this.storyData.relationships.push({
+            id: Date.now(),
+            fromId: from.id,
+            toId: to.id,
+            from: from.name,
+            to: to.name,
+            type: type || 'other',
+            label: type || 'other',
+            description: notes || '',
+            strength: 3,
+            secret: false,
+            updatedAt: new Date().toISOString()
+        });
+
         from.relatedCharacters = Array.isArray(from.relatedCharacters) ? from.relatedCharacters : [];
         to.relatedCharacters = Array.isArray(to.relatedCharacters) ? to.relatedCharacters : [];
 
@@ -3716,6 +3743,1063 @@ const App = {
         if (svg) svg.style.background = 'transparent';
     },
 
+    // ============ FULL STORY INTEGRITY CHECK (LOCAL TEXT AI) ============
+
+    integrityCheckState: {
+        running: false,
+        raw: '',
+        parsed: null,
+        applied: null
+    },
+
+    openIntegrityCheckModal() {
+        document.getElementById('integrityCheckModal')?.classList.add('active');
+        this.renderIntegrityCheckModal();
+    },
+
+    closeIntegrityCheckModal() {
+        document.getElementById('integrityCheckModal')?.classList.remove('active');
+    },
+
+    renderIntegrityCheckModal() {
+        const root = document.getElementById('integrityCheckBody');
+        const meta = document.getElementById('integrityCheckMeta');
+        const applyBtn = document.getElementById('integrityCheckApplyBtn');
+        if (!root || !meta || !applyBtn) return;
+
+        const parsed = this.integrityCheckState.parsed;
+        const raw = String(this.integrityCheckState.raw || '').trim();
+
+        const safeArr = (x) => Array.isArray(x) ? x : [];
+        const safeStr = (x) => (typeof x === 'string' ? x : (x == null ? '' : String(x)));
+        const esc = (x) => this.escapeHTML(safeStr(x));
+
+        if (this.integrityCheckState.running) {
+            meta.innerHTML = `<div class="ai-status analyzing"><span class="spinner"></span> Running full integrity check via local text AI…</div>`;
+        } else if (!raw) {
+            meta.innerHTML = `<div class="ai-status">No report yet. Run the check from Dashboard.</div>`;
+        } else {
+            const verdict = esc(parsed?.summary?.verdict || 'Report received.');
+            meta.innerHTML = `<div class="ai-status connected">✅ ${verdict}</div>`;
+        }
+
+        const fixActions = safeArr(parsed?.fixActions);
+        applyBtn.disabled = !(fixActions.length > 0) || this.integrityCheckState.running;
+        applyBtn.classList.toggle('opacity-50', applyBtn.disabled);
+        applyBtn.classList.toggle('pointer-events-none', applyBtn.disabled);
+
+        if (!parsed) {
+            root.innerHTML = raw
+                ? `<pre class="whitespace-pre-wrap break-words rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-xs leading-relaxed text-zinc-200">${esc(raw)}</pre>`
+                : `<div class="rounded-2xl border border-dashed border-zinc-800/70 bg-zinc-950/50 p-10 text-center text-sm text-zinc-500">Run the integrity check to populate this report.</div>`;
+            return;
+        }
+
+        const section = (title, klass, items, renderItem) => {
+            const list = safeArr(items);
+            const content = list.length
+                ? `<div class="mt-3 space-y-3">${list.map(renderItem).join('')}</div>`
+                : `<div class="mt-3 rounded-xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-xs font-semibold text-zinc-500">None.</div>`;
+            return `
+                <section class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5 ring-1 ring-inset ${klass}">
+                  <div class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-zinc-500">${esc(title)}</div>
+                  ${content}
+                </section>`;
+        };
+
+        const renderIssue = (i, tone) => {
+            const title = esc(i?.title || 'Untitled');
+            const details = esc(i?.details || '');
+            const fix = esc(i?.fix || '');
+            const evidence = safeArr(i?.evidence).map((e) => `<li class="ml-4 list-disc text-xs text-zinc-400">${esc(e)}</li>`).join('');
+            const evidenceBlock = evidence ? `<div class="mt-2"><div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">Evidence</div><ul class="mt-2">${evidence}</ul></div>` : '';
+            const fixTone =
+                tone === 'rose'
+                    ? 'border-rose-500/25 bg-rose-500/10 text-rose-100'
+                    : 'border-amber-400/25 bg-amber-400/10 text-amber-100';
+            const fixBlock = fix
+                ? `<div class="mt-3 rounded-xl border ${fixTone} px-4 py-3 text-xs font-semibold">Fix: ${fix}</div>`
+                : '';
+            return `
+                <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
+                  <div class="text-sm font-black tracking-tight text-zinc-100">${title}</div>
+                  ${details ? `<div class="mt-2 text-sm leading-relaxed text-zinc-300">${details}</div>` : ''}
+                  ${evidenceBlock}
+                  ${fixBlock}
+                </div>`;
+        };
+
+        const renderSuggestion = (s) => {
+            const title = esc(s?.title || 'Suggestion');
+            const details = esc(s?.details || '');
+            return `
+                <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
+                  <div class="text-sm font-black tracking-tight text-zinc-100">${title}</div>
+                  ${details ? `<div class="mt-2 text-sm leading-relaxed text-zinc-300">${details}</div>` : ''}
+                </div>`;
+        };
+
+        const renderBullet = (t) => `<div class="rounded-xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-sm font-semibold text-zinc-200">${esc(t)}</div>`;
+
+        const fixesPreview = fixActions.length
+            ? `<div class="mt-3 rounded-2xl border border-violet-500/25 bg-violet-500/[0.06] p-4">
+                 <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-violet-200/80">Automatable fixes (${fixActions.length})</div>
+                 <ul class="mt-3 space-y-2">
+                   ${fixActions.slice(0, 12).map((a) => `<li class="rounded-xl border border-zinc-800/80 bg-zinc-950/55 px-4 py-3 text-xs text-zinc-300"><span class="font-extrabold text-zinc-100">${esc(a?.title || a?.actionType || 'Fix')}</span><div class="mt-1 text-zinc-400">${esc(a?.details || '')}</div></li>`).join('')}
+                   ${fixActions.length > 12 ? `<li class="text-xs font-semibold text-zinc-500">…and ${fixActions.length - 12} more</li>` : ''}
+                 </ul>
+               </div>`
+            : `<div class="mt-3 rounded-2xl border border-dashed border-zinc-800/70 bg-zinc-950/50 p-6 text-center text-sm text-zinc-500">No safe fix actions were returned.</div>`;
+
+        const topRisks = safeArr(parsed?.summary?.topRisks);
+        const topSteps = safeArr(parsed?.summary?.topNextSteps);
+
+        root.innerHTML = `
+          <div class="space-y-4">
+            <section class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5 ring-1 ring-inset ring-violet-500/10">
+              <div class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-zinc-500">Summary</div>
+              <div class="mt-3 text-sm font-black tracking-tight text-zinc-100">${esc(parsed?.summary?.verdict || '—')}</div>
+              ${(topRisks.length || topSteps.length) ? `
+                <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/55 p-4">
+                    <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">Top risks</div>
+                    <div class="mt-3 space-y-2">${topRisks.length ? topRisks.map(renderBullet).join('') : `<div class="text-sm text-zinc-500">—</div>`}</div>
+                  </div>
+                  <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/55 p-4">
+                    <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">Top next steps</div>
+                    <div class="mt-3 space-y-2">${topSteps.length ? topSteps.map(renderBullet).join('') : `<div class="text-sm text-zinc-500">—</div>`}</div>
+                  </div>
+                </div>
+              ` : ''}
+              ${fixesPreview}
+            </section>
+
+            ${section('Critical Issues', 'ring-rose-500/20', parsed?.criticalIssues, (i) => renderIssue(i, 'rose'))}
+            ${section('Minor Issues / Improvements', 'ring-amber-400/15', parsed?.minorIssues, (i) => renderIssue(i, 'amber'))}
+            ${section('Strong Points', 'ring-emerald-400/10', parsed?.strongPoints, (t) => renderBullet(t))}
+            ${section('Specific Suggestions', 'ring-violet-500/10', parsed?.specificSuggestions, (s) => renderSuggestion(s))}
+
+            <details class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5">
+              <summary class="cursor-pointer text-sm font-extrabold text-zinc-200 select-none">Raw JSON output</summary>
+              <pre class="mt-4 whitespace-pre-wrap break-words rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-xs leading-relaxed text-zinc-200">${esc(raw)}</pre>
+            </details>
+          </div>
+        `;
+    },
+
+    async runFullStoryIntegrityCheck() {
+        const runStatus = document.getElementById('aiRunStatus');
+        if (runStatus) {
+            runStatus.innerHTML = '<div class="ai-result"><span class="spinner"></span> Running full story integrity check (local text AI)…</div>';
+        }
+
+        this.integrityCheckState.running = true;
+        this.integrityCheckState.raw = '';
+        this.integrityCheckState.parsed = null;
+        this.integrityCheckState.applied = null;
+        this.openIntegrityCheckModal();
+
+        try {
+            const raw = await AIService.runFullStoryIntegrityCheck(this.storyData);
+            this.integrityCheckState.raw = raw;
+            this.integrityCheckState.parsed = this.parseAIJSON(raw);
+            if (this.integrityCheckState.parsed?.queueTasks) {
+                this.addToExpansionQueue(this.integrityCheckState.parsed.queueTasks, 'Integrity Check');
+            }
+            this.integrityCheckState.running = false;
+            this.renderIntegrityCheckModal();
+            if (runStatus) runStatus.innerHTML = '<div class="ai-status connected">✅ Integrity check complete. See the modal for details and fix actions.</div>';
+        } catch (error) {
+            this.integrityCheckState.running = false;
+            this.integrityCheckState.raw = `Error: ${error.message}`;
+            this.integrityCheckState.parsed = null;
+            this.renderIntegrityCheckModal();
+            if (runStatus) runStatus.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(error.message)}</div>`;
+        }
+    },
+
+    async runHistoricalTangAccuracyCheck() {
+        const runStatus = document.getElementById('aiRunStatus');
+        if (runStatus) {
+            runStatus.innerHTML = '<div class="ai-result"><span class="spinner"></span> Running Tang historical accuracy check (local text AI)…</div>';
+        }
+
+        this.tangAccuracyState.running = true;
+        this.tangAccuracyState.raw = '';
+        this.tangAccuracyState.parsed = null;
+        this.openTangAccuracyModal();
+
+        try {
+            const raw = await AIService.runHistoricalTangAccuracyCheck(this.storyData);
+            this.tangAccuracyState.raw = raw;
+            this.tangAccuracyState.parsed = this.parseAIJSON(raw);
+            if (this.tangAccuracyState.parsed?.queueTasks) {
+                this.addToExpansionQueue(this.tangAccuracyState.parsed.queueTasks, 'Tang Accuracy');
+            }
+            this.tangAccuracyState.running = false;
+            this.renderTangAccuracyModal();
+            if (runStatus) runStatus.innerHTML = '<div class="ai-status connected">✅ Tang accuracy check complete. See the modal for details.</div>';
+        } catch (error) {
+            this.tangAccuracyState.running = false;
+            this.tangAccuracyState.raw = `Error: ${error.message}`;
+            this.tangAccuracyState.parsed = null;
+            this.renderTangAccuracyModal();
+            if (runStatus) runStatus.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(error.message)}</div>`;
+        }
+    },
+
+    applyIntegrityFixes() {
+        const parsed = this.integrityCheckState.parsed;
+        const statusEl = document.getElementById('integrityCheckApplyStatus');
+        if (!parsed) return;
+
+        const fixActions = Array.isArray(parsed.fixActions) ? parsed.fixActions : [];
+        if (fixActions.length === 0) return;
+
+        const ok = confirm(`Apply ${fixActions.length} suggested fix action(s)? This will only add draft work items / flags — it will not overwrite canon.`);
+        if (!ok) return;
+
+        const ensureTags = (obj) => {
+            obj.tags = Array.isArray(obj.tags) ? obj.tags : [];
+            return obj.tags;
+        };
+        const addTag = (obj, tag) => {
+            const tags = ensureTags(obj);
+            if (!tags.includes(tag)) tags.push(tag);
+        };
+
+        let workItemsAdded = 0;
+        let eventsFlagged = 0;
+        const errors = [];
+
+        fixActions.forEach((a) => {
+            try {
+                const type = String(a?.actionType || '').trim();
+                if (type === 'add_work_item') {
+                    this.storyData.workItems = Array.isArray(this.storyData.workItems) ? this.storyData.workItems : [];
+                    const title = String(a?.title || 'Integrity follow-up').trim().slice(0, 140);
+                    const category = String(a?.category || 'Story Integrity').trim().slice(0, 80);
+                    const details = String(a?.details || '').trim();
+                    const tags = Array.isArray(a?.tags) ? a.tags.filter(Boolean).map(String) : [];
+
+                    const nextId = Math.max(...this.storyData.workItems.map(w => w.id), 0) + 1;
+                    const item = {
+                        id: nextId,
+                        title: details ? `${title} — ${details}`.slice(0, 160) : title,
+                        category,
+                        completed: false,
+                        isCanon: false,
+                        tags: Array.from(new Set(['draft', 'integrity', ...tags]))
+                    };
+                    this.storyData.workItems.push(item);
+                    workItemsAdded += 1;
+                    return;
+                }
+
+                if (type === 'flag_event') {
+                    const evs = Array.isArray(this.storyData.events) ? this.storyData.events : [];
+                    const id = a?.eventId != null ? Number(a.eventId) : null;
+                    const byId = Number.isFinite(id) ? evs.find(e => Number(e?.id) === id) : null;
+                    const byTitle = !byId && a?.eventTitle
+                        ? evs.find(e => String(e?.title || '').trim().toLowerCase() === String(a.eventTitle).trim().toLowerCase())
+                        : null;
+                    const ev = byId || byTitle;
+                    if (!ev) throw new Error(`Could not find event for flag: ${a?.eventId || a?.eventTitle || '(missing)'}`);
+                    addTag(ev, 'integrity-flag');
+                    addTag(ev, 'draft');
+                    eventsFlagged += 1;
+                    return;
+                }
+            } catch (err) {
+                errors.push(err?.message || String(err));
+            }
+        });
+
+        this.save();
+        this.render();
+
+        const msg = `✅ Applied: ${workItemsAdded} work item(s) added, ${eventsFlagged} event(s) flagged.`;
+        this.integrityCheckState.applied = { workItemsAdded, eventsFlagged, errors };
+        if (statusEl) {
+            statusEl.innerHTML = errors.length
+                ? `<div class="ai-result warning">${this.escapeHTML(msg)} Some actions failed:\n${this.escapeHTML(errors.slice(0, 6).join(' • '))}</div>`
+                : `<div class="ai-status connected">${this.escapeHTML(msg)}</div>`;
+        }
+    },
+
+    // ============ HISTORICAL TANG ACCURACY CHECK (LOCAL TEXT AI) ============
+
+    tangAccuracyState: {
+        running: false,
+        raw: '',
+        parsed: null
+    },
+
+    openTangAccuracyModal() {
+        document.getElementById('tangAccuracyModal')?.classList.add('active');
+        this.renderTangAccuracyModal();
+    },
+
+    closeTangAccuracyModal() {
+        document.getElementById('tangAccuracyModal')?.classList.remove('active');
+    },
+
+    renderTangAccuracyModal() {
+        const root = document.getElementById('tangAccuracyBody');
+        const meta = document.getElementById('tangAccuracyMeta');
+        const copyBtn = document.getElementById('tangAccuracyCopyBtn');
+        if (!root || !meta || !copyBtn) return;
+
+        const parsed = this.tangAccuracyState.parsed;
+        const raw = String(this.tangAccuracyState.raw || '').trim();
+        const safeArr = (x) => Array.isArray(x) ? x : [];
+        const safeStr = (x) => (typeof x === 'string' ? x : (x == null ? '' : String(x)));
+        const esc = (x) => this.escapeHTML(safeStr(x));
+
+        if (this.tangAccuracyState.running) {
+            meta.innerHTML = `<div class="ai-status analyzing"><span class="spinner"></span> Running Tang (720 AD, Kaiyuan era) accuracy check via local text AI…</div>`;
+        } else if (!raw) {
+            meta.innerHTML = `<div class="ai-status">No report yet. Run the check from Dashboard.</div>`;
+        } else {
+            const verdict = esc(parsed?.summary?.verdict || 'Report received.');
+            meta.innerHTML = `<div class="ai-status connected">✅ ${verdict}</div>`;
+        }
+
+        copyBtn.disabled = !raw || this.tangAccuracyState.running;
+        copyBtn.classList.toggle('opacity-50', copyBtn.disabled);
+        copyBtn.classList.toggle('pointer-events-none', copyBtn.disabled);
+
+        if (!parsed) {
+            root.innerHTML = raw
+                ? `<pre class="whitespace-pre-wrap break-words rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-xs leading-relaxed text-zinc-200">${esc(raw)}</pre>`
+                : `<div class="rounded-2xl border border-dashed border-zinc-800/70 bg-zinc-950/50 p-10 text-center text-sm text-zinc-500">Run the Tang accuracy check to populate this report.</div>`;
+            return;
+        }
+
+        const itemCard = (title, details, note, tone) => {
+            const toneClass =
+                tone === 'red'
+                    ? 'border-rose-500/25 bg-rose-500/10 ring-rose-500/15'
+                    : tone === 'yellow'
+                        ? 'border-amber-400/25 bg-amber-400/10 ring-amber-400/15'
+                        : 'border-emerald-400/20 bg-emerald-400/[0.08] ring-emerald-400/10';
+            const heading =
+                tone === 'red'
+                    ? 'text-rose-100'
+                    : tone === 'yellow'
+                        ? 'text-amber-100'
+                        : 'text-emerald-100';
+            return `
+                <div class="rounded-2xl border ${toneClass} p-4 ring-1">
+                    <div class="text-sm font-black tracking-tight ${heading}">${esc(title || 'Untitled')}</div>
+                    ${details ? `<div class="mt-2 text-sm leading-relaxed text-zinc-200">${esc(details)}</div>` : ''}
+                    ${note ? `<div class="mt-3 rounded-xl border border-zinc-800/70 bg-zinc-950/55 px-4 py-3 text-xs font-semibold text-zinc-300"><span class="font-extrabold text-zinc-100">Historical note:</span> ${esc(note)}</div>` : ''}
+                </div>`;
+        };
+
+        const section = (label, tone, arr, mapFn) => {
+            const list = safeArr(arr);
+            return `
+                <section class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5">
+                    <div class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-zinc-500">${esc(label)}</div>
+                    <div class="mt-3 space-y-3">
+                        ${list.length ? list.map(mapFn).join('') : `<div class="rounded-xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-xs font-semibold text-zinc-500">None.</div>`}
+                    </div>
+                </section>`;
+        };
+
+        const risks = safeArr(parsed?.summary?.topHistoricalRisks);
+        const fixes = safeArr(parsed?.summary?.topFixes);
+
+        root.innerHTML = `
+            <div class="space-y-4">
+                <section class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5 ring-1 ring-inset ring-violet-500/10">
+                    <div class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-zinc-500">Summary</div>
+                    <div class="mt-3 text-sm font-black tracking-tight text-zinc-100">${esc(parsed?.summary?.verdict || '—')}</div>
+                    ${(risks.length || fixes.length) ? `
+                        <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                            <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/55 p-4">
+                                <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">Top historical risks</div>
+                                <ul class="mt-3 space-y-2">
+                                    ${risks.length ? risks.map((t) => `<li class="rounded-xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-sm font-semibold text-zinc-200">${esc(t)}</li>`).join('') : `<li class="text-sm text-zinc-500">—</li>`}
+                                </ul>
+                            </div>
+                            <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/55 p-4">
+                                <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">Top fixes</div>
+                                <ul class="mt-3 space-y-2">
+                                    ${fixes.length ? fixes.map((t) => `<li class="rounded-xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-sm font-semibold text-zinc-200">${esc(t)}</li>`).join('') : `<li class="text-sm text-zinc-500">—</li>`}
+                                </ul>
+                            </div>
+                        </div>
+                    ` : ''}
+                </section>
+
+                ${section('Critical Anachronisms / Historical Errors', 'red', parsed?.criticalAnachronisms, (i) => itemCard(i?.title, i?.details, i?.historicalNote, 'red') + (i?.exactFix ? `<div class="mt-2 rounded-xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-xs font-semibold text-rose-100">Exact fix: ${esc(i.exactFix)}</div>` : ''))}
+                ${section('Minor Inaccuracies or Improvements', 'yellow', parsed?.minorInaccuracies, (i) => itemCard(i?.title, i?.details, i?.historicalNote, 'yellow') + (i?.exactFix ? `<div class="mt-2 rounded-xl border border-amber-400/25 bg-amber-400/10 px-4 py-3 text-xs font-semibold text-amber-100">Exact fix: ${esc(i.exactFix)}</div>` : ''))}
+                ${section('Period-Accurate Strengths', 'green', parsed?.periodAccurateStrengths, (i) => itemCard(i?.title, i?.details, null, 'green'))}
+                ${section('Specific, actionable suggestions', 'green', parsed?.actionableSuggestions, (s) => itemCard(s?.title, s?.details, null, 'green') + (s?.exactFix ? `<div class="mt-2 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.08] px-4 py-3 text-xs font-semibold text-emerald-100">Exact fix: ${esc(s.exactFix)}</div>` : ''))}
+
+                <details class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5">
+                    <summary class="cursor-pointer text-sm font-extrabold text-zinc-200 select-none">Raw JSON output</summary>
+                    <pre class="mt-4 whitespace-pre-wrap break-words rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-xs leading-relaxed text-zinc-200">${esc(raw)}</pre>
+                </details>
+            </div>
+        `;
+    },
+
+    buildTangAccuracyCopyText() {
+        const parsed = this.tangAccuracyState.parsed;
+        const raw = String(this.tangAccuracyState.raw || '').trim();
+        if (!parsed) return raw;
+
+        const lines = [];
+        const A = (x) => Array.isArray(x) ? x : [];
+        const S = (x) => (typeof x === 'string' ? x : (x == null ? '' : String(x))).trim();
+
+        lines.push('Tang Dynasty Historical Accuracy Report (720 AD, Kaiyuan era)');
+        lines.push('');
+        if (parsed.summary?.verdict) lines.push(`Verdict: ${S(parsed.summary.verdict)}`);
+        const risks = A(parsed.summary?.topHistoricalRisks).map(S).filter(Boolean);
+        const fixes = A(parsed.summary?.topFixes).map(S).filter(Boolean);
+        if (risks.length) {
+            lines.push('');
+            lines.push('Top historical risks:');
+            risks.forEach(r => lines.push(`- ${r}`));
+        }
+        if (fixes.length) {
+            lines.push('');
+            lines.push('Top fixes:');
+            fixes.forEach(f => lines.push(`- ${f}`));
+        }
+
+        const block = (title, arr) => {
+            const list = A(arr);
+            lines.push('');
+            lines.push(title);
+            if (!list.length) { lines.push('- None'); return; }
+            list.forEach((it, idx) => {
+                lines.push(`${idx + 1}. ${S(it.title)}`);
+                if (it.details) lines.push(`   - Details: ${S(it.details)}`);
+                if (it.historicalNote) lines.push(`   - Historical note: ${S(it.historicalNote)}`);
+                if (it.exactFix) lines.push(`   - Exact fix: ${S(it.exactFix)}`);
+            });
+        };
+
+        block('Critical Anachronisms / Historical Errors', parsed.criticalAnachronisms);
+        block('Minor Inaccuracies or Improvements', parsed.minorInaccuracies);
+        block('Period-Accurate Strengths', parsed.periodAccurateStrengths);
+        block('Specific, actionable suggestions', parsed.actionableSuggestions);
+
+        lines.push('');
+        lines.push('--- Raw JSON ---');
+        lines.push(raw);
+        return lines.join('\n');
+    },
+
+    async copyTangAccuracyReport() {
+        const status = document.getElementById('tangAccuracyCopyStatus');
+        const text = this.buildTangAccuracyCopyText();
+        try {
+            await navigator.clipboard.writeText(text);
+            if (status) status.innerHTML = '<div class="ai-status connected">✅ Report copied.</div>';
+        } catch (err) {
+            if (status) status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(err.message || String(err))}</div>`;
+        }
+    },
+
+    // ============ MASTER SCRIPT (LOCAL TEXT AI) ============
+
+    masterScriptState: {
+        running: false,
+        text: '',
+        updatedAt: null,
+        lastError: null
+    },
+
+    openMasterScriptModal() {
+        document.getElementById('masterScriptModal')?.classList.add('active');
+        this.renderMasterScriptModal();
+    },
+
+    closeMasterScriptModal() {
+        document.getElementById('masterScriptModal')?.classList.remove('active');
+    },
+
+    renderMasterScriptModal() {
+        const meta = document.getElementById('masterScriptMeta');
+        const ta = document.getElementById('masterScriptText');
+        const copyBtn = document.getElementById('masterScriptCopyBtn');
+        const saveBtn = document.getElementById('masterScriptSaveBtn');
+        const regenBtn = document.getElementById('masterScriptRegenBtn');
+        if (!meta || !ta || !copyBtn || !saveBtn || !regenBtn) return;
+
+        if (this.masterScriptState.running) {
+            meta.innerHTML = `<div class="ai-status analyzing"><span class="spinner"></span> Generating Master Script via local text AI…</div>`;
+        } else if (this.masterScriptState.lastError) {
+            meta.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(String(this.masterScriptState.lastError))}</div>`;
+        } else if (this.masterScriptState.text) {
+            const when = this.masterScriptState.updatedAt
+                ? new Date(this.masterScriptState.updatedAt).toLocaleString()
+                : 'just now';
+            meta.innerHTML = `<div class="ai-status connected">✅ Updated: ${this.escapeHTML(when)}</div>`;
+        } else {
+            meta.innerHTML = `<div class="ai-status">No Master Script yet. Click Generate.</div>`;
+        }
+
+        ta.value = String(this.masterScriptState.text || '');
+
+        const disabled = this.masterScriptState.running;
+        [copyBtn, saveBtn, regenBtn].forEach((b) => {
+            b.disabled = disabled;
+            b.classList.toggle('opacity-50', disabled);
+            b.classList.toggle('pointer-events-none', disabled);
+        });
+        copyBtn.disabled = disabled || !this.masterScriptState.text;
+        saveBtn.disabled = disabled || !this.masterScriptState.text;
+    },
+
+    async generateOrUpdateMasterScript() {
+        const runStatus = document.getElementById('aiRunStatus');
+        if (runStatus) {
+            runStatus.innerHTML = '<div class="ai-result"><span class="spinner"></span> Generating / updating Master Script (local text AI)…</div>';
+        }
+
+        this.masterScriptState.running = true;
+        this.masterScriptState.lastError = null;
+        this.openMasterScriptModal();
+
+        try {
+            const text = await AIService.generateMasterScript(this.storyData);
+            this.masterScriptState.text = String(text || '').trim();
+            this.masterScriptState.updatedAt = new Date().toISOString();
+            this.masterScriptState.running = false;
+            this.renderMasterScriptModal();
+            if (runStatus) runStatus.innerHTML = '<div class="ai-status connected">✅ Master Script generated. Open the modal to copy or save.</div>';
+        } catch (error) {
+            this.masterScriptState.running = false;
+            this.masterScriptState.lastError = error?.message || String(error);
+            this.renderMasterScriptModal();
+            if (runStatus) runStatus.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(this.masterScriptState.lastError)}</div>`;
+        }
+    },
+
+    async copyMasterScriptToClipboard() {
+        const status = document.getElementById('masterScriptCopyStatus');
+        const text = String(this.masterScriptState.text || '').trim();
+        try {
+            await navigator.clipboard.writeText(text);
+            if (status) status.innerHTML = '<div class="ai-status connected">✅ Copied.</div>';
+        } catch (err) {
+            if (status) status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(err.message || String(err))}</div>`;
+        }
+    },
+
+    saveMasterScriptAsMasterDocument() {
+        const status = document.getElementById('masterScriptCopyStatus');
+        const text = String(this.masterScriptState.text || '').trim();
+        if (!text) return;
+
+        const now = new Date().toISOString();
+        if (!this.storyData.masterDocument || typeof this.storyData.masterDocument !== 'object') {
+            this.storyData.masterDocument = { version: this.MASTER_DOC_VERSION, format: 'markdown', updatedAt: null, text: '' };
+        }
+
+        const header = `\n\n---\n\n## Master Script Snapshot (${new Date(now).toLocaleString()})\n\n`;
+        const existing = String(this.storyData.masterDocument.text || '');
+        this.storyData.masterDocument.text = `${existing}${header}${text}\n`;
+        this.storyData.masterDocument.updatedAt = now;
+        this.save();
+
+        // If master document UI is mounted, refresh it.
+        this.renderMasterDocument();
+
+        if (status) status.innerHTML = '<div class="ai-status connected">✅ Appended to Master Document.</div>';
+    },
+
+    // ============ VOICE MEMO PROCESSOR (LOCAL TEXT AI) ============
+
+    voiceMemoState: {
+        running: false,
+        raw: '',
+        parsed: null
+    },
+
+    // ============ AI STORY TASKS & EXPANSION QUEUE ============
+
+    expansionQueueUI: {
+        filter: 'open',
+        query: ''
+    },
+
+    ensureExpansionQueue() {
+        if (!this.storyData.aiExpansionQueue || typeof this.storyData.aiExpansionQueue !== 'object') {
+            this.storyData.aiExpansionQueue = { version: 1, items: [] };
+        }
+        if (!Array.isArray(this.storyData.aiExpansionQueue.items)) {
+            this.storyData.aiExpansionQueue.items = [];
+        }
+    },
+
+    setExpansionQueueFilter(f) {
+        this.expansionQueueUI.filter = String(f || 'open').toLowerCase();
+        this.renderAIExpansionQueue();
+    },
+
+    setExpansionQueueQuery(q) {
+        this.expansionQueueUI.query = String(q || '').trim().toLowerCase();
+        this.renderAIExpansionQueue();
+    },
+
+    clearExpansionQueueDismissed() {
+        this.ensureExpansionQueue();
+        const before = this.storyData.aiExpansionQueue.items.length;
+        this.storyData.aiExpansionQueue.items = this.storyData.aiExpansionQueue.items.filter(i => i?.status !== 'dismissed');
+        const after = this.storyData.aiExpansionQueue.items.length;
+        StorageService.saveStoryData(this.storyData);
+        this.renderAIExpansionQueue();
+        const st = document.getElementById('aiQueueStatus');
+        if (st) st.innerHTML = `<div class="ai-status connected">✅ Cleared ${before - after} dismissed item(s).</div>`;
+    },
+
+    normalizeQueuePriority(p) {
+        const x = String(p || '').trim().toLowerCase();
+        if (x.startsWith('h')) return 'High';
+        if (x.startsWith('l')) return 'Low';
+        return 'Medium';
+    },
+
+    addToExpansionQueue(tasks, source = 'LLM') {
+        const list = Array.isArray(tasks) ? tasks : [];
+        if (!list.length) return;
+        this.ensureExpansionQueue();
+        const now = new Date().toISOString();
+
+        const norm = (s) => String(s || '').trim().toLowerCase();
+        const existingKeys = new Set(this.storyData.aiExpansionQueue.items.map(i => norm(i.title)));
+
+        list.forEach((t) => {
+            const title = String(t?.title || '').trim();
+            if (!title) return;
+            const key = norm(title);
+            if (existingKeys.has(key)) return;
+            existingKeys.add(key);
+
+            this.storyData.aiExpansionQueue.items.unshift({
+                id: Date.now() + Math.floor(Math.random() * 10000),
+                createdAt: now,
+                status: 'open',
+                title,
+                source: String(t?.source || source),
+                priority: this.normalizeQueuePriority(t?.priority || 'Medium'),
+                description: String(t?.description || t?.details || '').trim(),
+                actionHint: String(t?.actionHint || t?.actionTypeHint || '').trim().toLowerCase() || null
+            });
+        });
+
+        // Keep queue bounded.
+        this.storyData.aiExpansionQueue.items = this.storyData.aiExpansionQueue.items.slice(0, 120);
+        StorageService.saveStoryData(this.storyData);
+        this.renderAIExpansionQueue();
+    },
+
+    updateQueueItemStatus(id, status) {
+        this.ensureExpansionQueue();
+        const nid = Number(id);
+        const item = this.storyData.aiExpansionQueue.items.find(i => Number(i?.id) === nid);
+        if (!item) return;
+        item.status = status;
+        item.updatedAt = new Date().toISOString();
+        StorageService.saveStoryData(this.storyData);
+        this.renderAIExpansionQueue();
+    },
+
+    dismissQueueItem(id) { this.updateQueueItemStatus(id, 'dismissed'); },
+    markQueueItemDone(id) { this.updateQueueItemStatus(id, 'done'); },
+
+    expandQueueItemNow(id) {
+        this.ensureExpansionQueue();
+        const nid = Number(id);
+        const item = this.storyData.aiExpansionQueue.items.find(i => Number(i?.id) === nid);
+        if (!item) return;
+        const ta = document.getElementById('voiceMemoText');
+        this.openVoiceMemoModal();
+        const seed = `Expand this task into concrete beats + work items:\n\nTitle: ${item.title}\nPriority: ${item.priority}\nSource: ${item.source}\n\nDetails:\n${item.description || ''}\n`;
+        const memoTa = document.getElementById('voiceMemoText');
+        if (memoTa) memoTa.value = seed;
+    },
+
+    addQueueItemAsWorkItem(id) {
+        this.ensureExpansionQueue();
+        const nid = Number(id);
+        const item = this.storyData.aiExpansionQueue.items.find(i => Number(i?.id) === nid);
+        if (!item) return;
+        this.storyData.workItems = Array.isArray(this.storyData.workItems) ? this.storyData.workItems : [];
+        this.storyData.workItems.push({
+            id: Math.max(...this.storyData.workItems.map(w => w.id), 0) + 1,
+            title: String(item.title).slice(0, 160),
+            category: item.source === 'Tang Accuracy' ? 'Historical Research' : 'Story Integrity',
+            completed: false,
+            isCanon: false,
+            tags: ['draft', 'ai-queue']
+        });
+        this.save();
+        this.markQueueItemDone(id);
+        this.switchTab('workitems');
+    },
+
+    addQueueItemToTimeline(id) {
+        this.ensureExpansionQueue();
+        const nid = Number(id);
+        const item = this.storyData.aiExpansionQueue.items.find(i => Number(i?.id) === nid);
+        if (!item) return;
+        const nextId = Math.max(...(this.storyData.events || []).map(e => e.id), 0) + 1;
+        const newEvent = createTimelineEvent({
+            id: nextId,
+            title: String(item.title).slice(0, 120),
+            period: 'Draft',
+            order: (this.storyData.events || []).length,
+            beat: null,
+            description: String(item.description || '').slice(0, 320),
+            location: ''
+        });
+        this.storyData.events.push(newEvent);
+        this.save();
+        this.markQueueItemDone(id);
+        this.focusTimelineEvent(nextId);
+    },
+
+    renderAIExpansionQueue() {
+        const listEl = document.getElementById('aiQueueList');
+        const statusEl = document.getElementById('aiQueueStatus');
+        if (!listEl || !statusEl) return;
+
+        this.ensureExpansionQueue();
+        const items = [...this.storyData.aiExpansionQueue.items];
+
+        const filter = String(this.expansionQueueUI.filter || 'open');
+        const q = String(this.expansionQueueUI.query || '').trim().toLowerCase();
+
+        const shown = items
+            .filter((i) => {
+                if (!i) return false;
+                if (filter !== 'all' && String(i.status || 'open') !== filter) return false;
+                if (!q) return true;
+                const hay = `${i.title || ''}\n${i.description || ''}\n${i.source || ''}`.toLowerCase();
+                return hay.includes(q);
+            })
+            .sort((a, b) => {
+                const pr = (x) => x === 'High' ? 0 : x === 'Medium' ? 1 : 2;
+                return pr(a.priority) - pr(b.priority) || (new Date(b.createdAt || 0)) - (new Date(a.createdAt || 0));
+            });
+
+        statusEl.innerHTML = `<div class="text-sm font-semibold text-zinc-500">Showing <span class="text-zinc-200">${shown.length}</span> of <span class="text-zinc-200">${items.length}</span> tasks.</div>`;
+
+        if (shown.length === 0) {
+            listEl.innerHTML = `<div class="rounded-2xl border border-dashed border-zinc-800/70 bg-zinc-950/50 p-10 text-center text-sm text-zinc-500">No queue items yet. Run Integrity / Tang checks, or process a voice memo.</div>`;
+            return;
+        }
+
+        const pill = (txt, cls) => `<span class="inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[0.12em] ${cls}">${this.escapeHTML(txt)}</span>`;
+
+        listEl.innerHTML = `<div class="space-y-3">
+            ${shown.map((i) => {
+                const priCls = i.priority === 'High'
+                    ? 'border-rose-400/30 bg-rose-400/10 text-rose-100'
+                    : i.priority === 'Low'
+                        ? 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200'
+                        : 'border-amber-400/30 bg-amber-400/10 text-amber-100';
+                const srcCls = 'border-violet-500/25 bg-violet-500/10 text-violet-100';
+                const statusCls = i.status === 'done'
+                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100'
+                    : i.status === 'dismissed'
+                        ? 'border-zinc-600/25 bg-zinc-600/10 text-zinc-200'
+                        : 'border-violet-400/25 bg-violet-400/10 text-violet-100';
+
+                return `
+                <article class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5 shadow-[0_18px_50px_-22px_rgba(0,0,0,0.72)] ring-1 ring-inset ring-violet-500/[0.06]">
+                    <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div class="min-w-0 flex-1">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <div class="min-w-0 text-base font-black tracking-tight text-zinc-100">${this.escapeHTML(i.title || 'Untitled')}</div>
+                                ${pill(i.priority || 'Medium', priCls)}
+                                ${pill(i.source || 'LLM', srcCls)}
+                                ${pill(i.status || 'open', statusCls)}
+                            </div>
+                            ${i.description ? `<div class="mt-2 text-sm leading-relaxed text-zinc-300">${this.escapeHTML(i.description)}</div>` : ''}
+                        </div>
+                    </div>
+                    <div class="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                        <button class="rounded-xl bg-violet-600 px-4 py-2.5 text-xs font-extrabold text-white shadow-sm ring-1 ring-inset ring-white/10 hover:bg-violet-500" onclick="App.addQueueItemToTimeline(${Number(i.id)})">Add to Timeline</button>
+                        <button class="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-xs font-extrabold text-emerald-100 hover:bg-emerald-500/15" onclick="App.addQueueItemAsWorkItem(${Number(i.id)})">Add as Work Item</button>
+                        <button class="rounded-xl border border-zinc-600/90 bg-zinc-900/60 px-4 py-2.5 text-xs font-extrabold text-zinc-200 hover:bg-zinc-800/80" onclick="App.expandQueueItemNow(${Number(i.id)})">Expand Now</button>
+                        <button class="rounded-xl border border-zinc-600/90 bg-zinc-950/40 px-4 py-2.5 text-xs font-extrabold text-zinc-200 hover:bg-zinc-900/60" onclick="App.markQueueItemDone(${Number(i.id)})">Mark Done</button>
+                        <button class="rounded-xl border border-rose-500/35 bg-rose-500/10 px-4 py-2.5 text-xs font-extrabold text-rose-100 hover:bg-rose-500/15" onclick="App.dismissQueueItem(${Number(i.id)})">Dismiss</button>
+                    </div>
+                </article>`;
+            }).join('')}
+        </div>`;
+    },
+
+    getOpenQueueItemsForSidebar(limit = 6) {
+        this.ensureExpansionQueue();
+        const items = [...this.storyData.aiExpansionQueue.items]
+            .filter(i => i && (i.status || 'open') === 'open')
+            .sort((a, b) => {
+                const pr = (x) => x === 'High' ? 0 : x === 'Medium' ? 1 : 2;
+                return pr(a.priority) - pr(b.priority) || (new Date(b.createdAt || 0)) - (new Date(a.createdAt || 0));
+            });
+        return items.slice(0, Math.max(1, Number(limit) || 6));
+    },
+
+    buildQueuePlainText(items) {
+        const list = Array.isArray(items) ? items : [];
+        const lines = [];
+        list.forEach((i, idx) => {
+            const pri = String(i?.priority || 'Medium');
+            const src = String(i?.source || 'LLM');
+            const title = String(i?.title || '').trim();
+            if (!title) return;
+            lines.push(`${idx + 1}. ${title} [${pri} • ${src}]`);
+        });
+        return lines.join('\n');
+    },
+
+    async copyAllQueueQuestions() {
+        const items = this.getOpenQueueItemsForSidebar(20);
+        const text = this.buildQueuePlainText(items);
+        if (!text) return;
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch (e) {
+            // Silent fail; user can still copy from queue tab if needed.
+        }
+    },
+
+    async copyQueueItem(id) {
+        this.ensureExpansionQueue();
+        const nid = Number(id);
+        const item = this.storyData.aiExpansionQueue.items.find(i => Number(i?.id) === nid);
+        if (!item) return;
+        const text = this.buildQueuePlainText([item]);
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch (e) {
+            // ignore
+        }
+    },
+
+    renderQueueSidebarPanel() {
+        const el = document.getElementById('aiQueueSidebarList');
+        if (!el) return;
+        const items = this.getOpenQueueItemsForSidebar(6);
+        if (items.length === 0) {
+            el.innerHTML = `<div class="rounded-xl border border-dashed border-zinc-800/70 bg-zinc-950/40 px-3 py-3 text-xs font-semibold text-zinc-500">No queued questions yet. Run Integrity / Tang, or process a voice memo.</div>`;
+            return;
+        }
+
+        const priBadge = (p) => {
+            const x = String(p || 'Medium');
+            if (x === 'High') return `<span class="ml-2 inline-flex items-center rounded-full border border-rose-400/30 bg-rose-400/10 px-2 py-0.5 text-[10px] font-extrabold text-rose-100">High</span>`;
+            return `<span class="ml-2 inline-flex items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-extrabold text-amber-100">Med</span>`;
+        };
+
+        el.innerHTML = items.map((i, idx) => {
+            const title = this.escapeHTML(String(i.title || '').trim());
+            const src = this.escapeHTML(String(i.source || '').trim() || 'LLM');
+            return `
+                <div class="rounded-xl border border-zinc-800/80 bg-zinc-950/45 px-3 py-2.5">
+                    <div class="flex items-start justify-between gap-2">
+                        <div class="min-w-0 flex-1">
+                            <div class="text-xs font-black leading-snug text-zinc-100">${idx + 1}. ${title}${priBadge(i.priority)}</div>
+                            <div class="mt-1 text-[10px] font-extrabold uppercase tracking-[0.14em] text-violet-300/80">${src}</div>
+                        </div>
+                        <div class="flex shrink-0 items-center gap-1">
+                            <button class="rounded-lg border border-zinc-700/80 bg-zinc-950/60 px-2 py-1 text-[10px] font-extrabold text-zinc-200 hover:bg-zinc-900/70" onclick="App.copyQueueItem(${Number(i.id)})">Copy</button>
+                            <button class="rounded-lg border border-zinc-700/80 bg-zinc-950/60 px-2 py-1 text-[10px] font-extrabold text-zinc-200 hover:bg-zinc-900/70" onclick="App.markQueueItemDone(${Number(i.id)})">Done</button>
+                        </div>
+                    </div>
+                </div>`;
+        }).join('');
+    },
+
+    openVoiceMemoModal() {
+        document.getElementById('voiceMemoModal')?.classList.add('active');
+        this.renderVoiceMemoModal();
+        setTimeout(() => document.getElementById('voiceMemoText')?.focus(), 0);
+    },
+
+    closeVoiceMemoModal() {
+        document.getElementById('voiceMemoModal')?.classList.remove('active');
+    },
+
+    getVoiceMemoIssuesContext() {
+        const parts = [];
+
+        const integ = this.integrityCheckState?.raw ? String(this.integrityCheckState.raw).trim() : '';
+        if (integ) {
+            parts.push('Latest Story Integrity Check (raw excerpt):');
+            parts.push(integ.slice(0, 3000));
+        }
+
+        const tang = this.tangAccuracyState?.raw ? String(this.tangAccuracyState.raw).trim() : '';
+        if (tang) {
+            parts.push('');
+            parts.push('Latest Tang Accuracy Check (raw excerpt):');
+            parts.push(tang.slice(0, 3000));
+        }
+
+        // Also reference any saved reports of these types if present.
+        const reports = Array.isArray(this.storyData?.aiReports) ? this.storyData.aiReports : [];
+        const latestByType = (type) => reports.filter(r => r?.type === type).sort((a, b) => (new Date(b.createdAt || 0)) - (new Date(a.createdAt || 0)))[0];
+        const savedInteg = latestByType('integrity');
+        const savedTang = latestByType('tang-accuracy');
+        if (!integ && savedInteg?.content) {
+            parts.push('Saved Story Integrity report excerpt:');
+            parts.push(String(savedInteg.content).slice(0, 3000));
+        }
+        if (!tang && savedTang?.content) {
+            parts.push('Saved Tang Accuracy report excerpt:');
+            parts.push(String(savedTang.content).slice(0, 3000));
+        }
+
+        return parts.filter(Boolean).join('\n');
+    },
+
+    renderVoiceMemoModal() {
+        const meta = document.getElementById('voiceMemoMeta');
+        const results = document.getElementById('voiceMemoResults');
+        const applyRow = document.getElementById('voiceMemoApplyRow');
+        const copyBtn = document.getElementById('voiceMemoCopyBtn');
+        if (!meta || !results || !applyRow || !copyBtn) return;
+
+        if (this.voiceMemoState.running) {
+            meta.innerHTML = `<div class="ai-status analyzing"><span class="spinner"></span> Processing voice memo with local LLM…</div>`;
+        } else if (this.voiceMemoState.raw) {
+            meta.innerHTML = `<div class="ai-status connected">✅ Processed. Review + apply below.</div>`;
+        } else {
+            meta.innerHTML = `<div class="ai-status">Paste a transcription and click Process.</div>`;
+        }
+
+        const parsed = this.voiceMemoState.parsed;
+        const raw = String(this.voiceMemoState.raw || '').trim();
+        const esc = (x) => this.escapeHTML(String(x ?? ''));
+        const safeArr = (x) => Array.isArray(x) ? x : [];
+
+        copyBtn.disabled = this.voiceMemoState.running || !raw;
+        copyBtn.classList.toggle('opacity-50', copyBtn.disabled);
+        copyBtn.classList.toggle('pointer-events-none', copyBtn.disabled);
+
+        if (!parsed) {
+            results.innerHTML = raw
+                ? `<pre class="whitespace-pre-wrap break-words rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-xs leading-relaxed text-zinc-200">${esc(raw)}</pre>`
+                : `<div class="rounded-2xl border border-dashed border-zinc-800/70 bg-zinc-950/50 p-10 text-center text-sm text-zinc-500">No output yet.</div>`;
+            applyRow.classList.add('hidden');
+            return;
+        }
+
+        const insights = safeArr(parsed.keyInsights);
+        const fixes = safeArr(parsed.fixesForFlaggedIssues);
+        const actions = safeArr(parsed.suggestedActions);
+
+        const block = (title, contentHtml) => `
+            <section class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5">
+              <div class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-zinc-500">${esc(title)}</div>
+              <div class="mt-3">${contentHtml}</div>
+            </section>`;
+
+        const list = (arr) => arr.length
+            ? `<ul class="space-y-2">${arr.map(t => `<li class="rounded-xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-sm font-semibold text-zinc-200">${esc(t)}</li>`).join('')}</ul>`
+            : `<div class="rounded-xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-xs font-semibold text-zinc-500">None.</div>`;
+
+        const actionsHtml = actions.length
+            ? `<div class="space-y-3">${actions.map((a) => `
+                <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
+                  <div class="text-sm font-black tracking-tight text-zinc-100">${esc(a?.title || 'Suggestion')}</div>
+                  <div class="mt-1 text-xs font-extrabold uppercase tracking-[0.14em] text-violet-300/90">${esc(a?.actionType || 'action')}</div>
+                  <div class="mt-2 text-sm leading-relaxed text-zinc-300">${esc(a?.description || '')}</div>
+                </div>`).join('')}</div>`
+            : `<div class="rounded-xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-xs font-semibold text-zinc-500">No structured suggestedActions returned.</div>`;
+
+        results.innerHTML = `
+            <div class="space-y-4">
+                ${block('Key Insights from the Memo', list(insights))}
+                ${block('Suggested New/Updated Timeline Beats + Work Items', actionsHtml)}
+                ${block('Any Fixes for Flagged Issues', list(fixes))}
+                <details class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5">
+                  <summary class="cursor-pointer text-sm font-extrabold text-zinc-200 select-none">Raw JSON output</summary>
+                  <pre class="mt-4 whitespace-pre-wrap break-words rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-xs leading-relaxed text-zinc-200">${esc(raw)}</pre>
+                </details>
+            </div>
+        `;
+
+        applyRow.classList.toggle('hidden', actions.length === 0);
+    },
+
+    async processVoiceMemoWithLocalLLM() {
+        const text = String(document.getElementById('voiceMemoText')?.value || '').trim();
+        const refIssues = Boolean(document.getElementById('voiceMemoRefIssues')?.checked);
+        const issuesContext = refIssues ? this.getVoiceMemoIssuesContext() : '';
+
+        this.voiceMemoState.running = true;
+        this.voiceMemoState.raw = '';
+        this.voiceMemoState.parsed = null;
+        this.renderVoiceMemoModal();
+
+        try {
+            const raw = await AIService.processVoiceMemo(this.storyData, text, { issuesContext });
+            this.voiceMemoState.raw = raw;
+            const parsed = this.parseAIJSON(raw);
+            if (parsed?.queueTasks) {
+                this.addToExpansionQueue(parsed.queueTasks, 'Voice Memo');
+            }
+            const actions = (Array.isArray(parsed?.suggestedActions) ? parsed.suggestedActions : [])
+                .map((a) => ({
+                    ...a,
+                    isCanon: false,
+                    tags: Array.isArray(a?.tags) ? Array.from(new Set([...(a.tags || []), 'draft', 'voice-memo'])) : ['draft', 'voice-memo']
+                }));
+
+            this.voiceMemoState.parsed = { ...parsed, suggestedActions: actions };
+            this.voiceMemoState.running = false;
+            this.renderVoiceMemoModal();
+
+            // Save as AI report so existing "apply suggested actions" buttons can be reused.
+            if (actions.length) {
+                const content = [
+                    '## Key Insights',
+                    ...(Array.isArray(parsed?.keyInsights) ? parsed.keyInsights.map(x => `- ${x}`) : ['_None_']),
+                    '',
+                    '## Fixes for flagged issues',
+                    ...(Array.isArray(parsed?.fixesForFlaggedIssues) ? parsed.fixesForFlaggedIssues.map(x => `- ${x}`) : ['_None_']),
+                    '',
+                    '## Suggested actions',
+                    ...actions.map(a => `- **${a.title}** (${a.actionType}): ${a.description}`)
+                ].join('\n');
+                this.addAIReport('voice-memo', '🎙️ Voice memo processed', content, 'success', actions);
+                this.suggestedActionsUI.selected = {};
+                this.renderAISuggestedActions();
+                this.renderAIReports();
+                this.renderAIActionItems();
+            }
+        } catch (error) {
+            this.voiceMemoState.running = false;
+            this.voiceMemoState.raw = `Error: ${error.message}`;
+            this.voiceMemoState.parsed = null;
+            this.renderVoiceMemoModal();
+        }
+    },
+
+    async copyVoiceMemoResult() {
+        const status = document.getElementById('voiceMemoCopyStatus');
+        const raw = String(this.voiceMemoState.raw || '').trim();
+        try {
+            await navigator.clipboard.writeText(raw);
+            if (status) status.innerHTML = '<div class="ai-status connected">✅ Copied.</div>';
+        } catch (err) {
+            if (status) status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(err.message || String(err))}</div>`;
+        }
+    },
+
     renderStoryWorldMapGallery() {
         const el = document.getElementById('storyWorldMapGallery');
         if (!el) return;
@@ -4137,6 +5221,845 @@ const App = {
         } finally {
             this.renderGhostBorderInteractiveMap();
         }
+    },
+
+    // ============ RELATIONSHIP NETWORK GRAPH ============
+
+    relationshipGraphState: {
+        nodes: [],
+        links: [],
+        positions: new Map(),
+        hoveredId: null,
+        filter: 'all',
+        searchQuery: '',
+        draggingId: null,
+        dragMoved: false,
+        simRunning: false,
+        simFrame: null,
+        seed: 1
+    },
+
+    ensureRelationshipStore() {
+        this.storyData.relationships = Array.isArray(this.storyData.relationships) ? this.storyData.relationships : [];
+        this.storyData.relationshipGraphLayout = (this.storyData.relationshipGraphLayout && typeof this.storyData.relationshipGraphLayout === 'object')
+            ? this.storyData.relationshipGraphLayout
+            : { version: 1, positions: {} };
+        if (!this.storyData.relationshipGraphLayout.positions || typeof this.storyData.relationshipGraphLayout.positions !== 'object') {
+            this.storyData.relationshipGraphLayout.positions = {};
+        }
+
+        const chars = Array.isArray(this.storyData?.characters) ? this.storyData.characters : [];
+        const byName = new Map(chars.map((c) => [String(c.name || '').trim().toLowerCase(), c]));
+        let changed = false;
+
+        this.storyData.relationships.forEach((r) => {
+            if (r == null || typeof r !== 'object') return;
+            if (r.id == null) { r.id = Date.now() + Math.floor(Math.random() * 10000); changed = true; }
+            if (r.strength == null || !Number.isFinite(Number(r.strength))) { r.strength = 3; changed = true; }
+            if (r.secret == null) { r.secret = false; changed = true; }
+            if (!r.label) { r.label = r.type || 'other'; changed = true; }
+            if (!r.type) { r.type = 'other'; changed = true; }
+            if (r.fromId == null && r.from) {
+                const c = byName.get(String(r.from).trim().toLowerCase());
+                if (c) { r.fromId = c.id; changed = true; }
+            }
+            if (r.toId == null && r.to) {
+                const c = byName.get(String(r.to).trim().toLowerCase());
+                if (c) { r.toId = c.id; changed = true; }
+            }
+        });
+
+        // Load persisted positions into working map.
+        const posObj = this.storyData.relationshipGraphLayout.positions;
+        if (posObj && typeof posObj === 'object' && this.relationshipGraphState.positions.size === 0) {
+            Object.entries(posObj).forEach(([k, v]) => {
+                const id = Number(k);
+                if (!Number.isFinite(id) || !v) return;
+                const x = Number(v.x), y = Number(v.y);
+                if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+                this.relationshipGraphState.positions.set(id, { x, y, vx: 0, vy: 0 });
+            });
+        }
+
+        if (changed) StorageService.saveStoryData(this.storyData);
+    },
+
+    setRelationshipGraphFilter(filter) {
+        this.relationshipGraphState.filter = String(filter || 'all').toLowerCase();
+        this.renderRelationshipNetworkGraph({ forceRestart: false });
+    },
+
+    setRelationshipGraphQuery(q) {
+        this.relationshipGraphState.searchQuery = String(q || '').trim().toLowerCase();
+        this.renderRelationshipNetworkGraph({ forceRestart: false });
+    },
+
+    autoLayoutRelationshipNetwork() {
+        // Keep relationships but clear positions so the simulation can settle.
+        this.storyData.relationshipGraphLayout = this.storyData.relationshipGraphLayout || { version: 1, positions: {} };
+        this.storyData.relationshipGraphLayout.positions = {};
+        this.relationshipGraphState.positions = new Map();
+        StorageService.saveStoryData(this.storyData);
+        this.renderRelationshipNetworkGraph({ forceRestart: true });
+    },
+
+    resetRelationshipNetworkPositions() {
+        const ok = confirm('Reset relationship graph positions? (Your manual layout will be cleared.)');
+        if (!ok) return;
+        this.autoLayoutRelationshipNetwork();
+    },
+
+    stopRelationshipGraphSim() {
+        if (this.relationshipGraphState.simFrame) {
+            cancelAnimationFrame(this.relationshipGraphState.simFrame);
+            this.relationshipGraphState.simFrame = null;
+        }
+        this.relationshipGraphState.simRunning = false;
+    },
+
+    refreshRelationshipNetworkGraph() {
+        this.relationshipGraphState.seed = (this.relationshipGraphState.seed || 1) + 1;
+        this.relationshipGraphState.positions = new Map();
+        this.stopRelationshipGraphSim();
+        this.renderRelationshipNetworkGraph({ forceRestart: true });
+    },
+
+    refreshCharacterArcTracker() {
+        this.renderCharacterArcTracker({ force: true });
+    },
+
+    inferArcStageText(char) {
+        const notes = String(char?.notes || '');
+        const background = String(char?.background || '');
+        const personality = String(char?.personality || '');
+        const hay = `${notes}\n${background}\n${personality}`;
+        const m = hay.match(/(?:^|\n)\s*(?:Arc(?:\s*stage)?|Current\s*arc)\s*[:\-]\s*(.+)\s*$/im);
+        if (m && m[1]) return String(m[1]).trim();
+
+        // Heuristic fallbacks.
+        if (/survivor|massacre|wronged|exile/i.test(hay)) return 'Disillusioned Survivor → Strategic Reformer';
+        if (/investigator|truth|justice/i.test(hay)) return 'Idealist Investigator → Relentless Truth-Seeker';
+        if (/guard|commander|soldier|veteran/i.test(hay)) return 'Duty-Bound Protector → Principle-Driven Leader';
+        if (/consort|palace|court/i.test(hay)) return 'Caged Court Player → Calculating Power Broker';
+        return 'Arc evolving → (add “Arc:” line in character notes for precision)';
+    },
+
+    inferArcShiftText(char, appearances = []) {
+        const notes = String(char?.notes || '');
+        const m = notes.match(/(?:^|\n)\s*(?:Shift|Motivation|Key\s*(?:shift|turn))\s*[:\-]\s*(.+)\s*$/im);
+        if (m && m[1]) return String(m[1]).trim();
+
+        const last = appearances.length ? appearances[appearances.length - 1] : null;
+        if (last?.title) {
+            return `After “${String(last.title).trim()}”: pressure reveals true priorities.`;
+        }
+        return 'Motivation shift: (add “Shift:” line in notes to track this explicitly)';
+    },
+
+    renderCharacterArcTracker({ force = false } = {}) {
+        const root = document.getElementById('characterArcTracker');
+        if (!root) return;
+
+        const characters = Array.isArray(this.storyData?.characters) ? this.storyData.characters : [];
+        const events = [...(Array.isArray(this.storyData?.events) ? this.storyData.events : [])]
+            .sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0) || (Number(a?.id) || 0) - (Number(b?.id) || 0));
+
+        if (!characters.length) {
+            root.innerHTML = `
+                <div class="rounded-2xl border border-dashed border-zinc-800/70 bg-zinc-950/50 p-10 text-center text-sm text-zinc-500">
+                    No characters yet. Add characters to see arc progress.
+                </div>`;
+            return;
+        }
+
+        const byId = new Map(characters.map((c) => [Number(c.id), c]));
+        const appearancesByChar = new Map();
+        characters.forEach((c) => appearancesByChar.set(Number(c.id), []));
+
+        events.forEach((ev) => {
+            const involved = Array.isArray(ev?.involvedCharacterIds) ? ev.involvedCharacterIds : [];
+            involved.forEach((cid) => {
+                const id = Number(cid);
+                if (!appearancesByChar.has(id)) appearancesByChar.set(id, []);
+                appearancesByChar.get(id).push({
+                    id: Number(ev.id),
+                    order: ev.order ?? 0,
+                    beat: ev.beat != null && ev.beat !== '' ? String(ev.beat) : '',
+                    title: String(ev.title || 'Untitled'),
+                    location: String(ev.location || ''),
+                    isCanon: Boolean(ev.isCanon)
+                });
+            });
+        });
+
+        // Sort canon first, then by involvement count.
+        const sortedChars = [...characters].sort((a, b) => {
+            const ac = Boolean(a.isCanon), bc = Boolean(b.isCanon);
+            if (ac !== bc) return ac ? -1 : 1;
+            const aa = (appearancesByChar.get(Number(a.id)) || []).length;
+            const bb = (appearancesByChar.get(Number(b.id)) || []).length;
+            return bb - aa || String(a.name || '').localeCompare(String(b.name || ''));
+        });
+
+        const typeColors = (type) => {
+            const t = String(type || 'gray').toLowerCase();
+            if (t === 'friendly') return { ring: 'border-emerald-400/25 bg-emerald-400/10', accent: 'text-emerald-200', dot: 'bg-emerald-400' };
+            if (t === 'antagonist') return { ring: 'border-rose-400/25 bg-rose-400/10', accent: 'text-rose-200', dot: 'bg-rose-400' };
+            return { ring: 'border-zinc-400/25 bg-zinc-400/10', accent: 'text-zinc-200', dot: 'bg-zinc-300' };
+        };
+
+        const beatSlots = ['1','2','3','4','5','6','7','8'];
+        const beatLabel = (b) => b ? `Beat ${b}` : '—';
+
+        const cards = sortedChars.map((c) => {
+            const id = Number(c.id);
+            const name = this.escapeHTML(String(c.name || 'Unknown'));
+            const role = String(c.role || '').trim();
+            const ini = this.escapeHTML((String(c.name || '?').trim()[0] || '?').toUpperCase());
+            const colors = typeColors(c.type);
+            const appearances = appearancesByChar.get(id) || [];
+            const last = appearances.length ? appearances[appearances.length - 1] : null;
+            const recentIds = new Set(appearances.slice(-3).map(a => a.id));
+
+            const stage = this.escapeHTML(this.inferArcStageText(c));
+            const shift = this.escapeHTML(this.inferArcShiftText(c, appearances));
+
+            const beatPresence = new Set(appearances.map((a) => String(a.beat || '').trim()).filter(Boolean));
+            const bar = `
+                <div class="mt-3">
+                    <div class="flex items-center justify-between text-[10px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">
+                        <span>Beat presence</span>
+                        <span class="text-violet-300/90">${appearances.length} scene${appearances.length === 1 ? '' : 's'}</span>
+                    </div>
+                    <div class="mt-2 grid grid-cols-8 gap-1.5">
+                        ${beatSlots.map((b) => {
+                            const on = beatPresence.has(b);
+                            const cls = on
+                                ? 'bg-violet-500/70 border-violet-400/50 shadow-[0_0_14px_rgba(139,92,246,0.35)]'
+                                : 'bg-zinc-900/70 border-zinc-800/80';
+                            return `<div class="h-2 rounded-full border ${cls}" title="${this.escapeHTML(beatLabel(b))}"></div>`;
+                        }).join('')}
+                    </div>
+                </div>`;
+
+            const chips = appearances.length
+                ? `<div class="mt-4 flex flex-wrap gap-2 border-t border-zinc-800/80 pt-4">
+                    ${appearances.map((a) => {
+                        const isRecent = recentIds.has(a.id);
+                        const chipCls = isRecent
+                            ? 'border-violet-400/45 bg-violet-500/15 text-violet-100 shadow-[0_0_18px_rgba(139,92,246,0.22)]'
+                            : 'border-zinc-700/80 bg-zinc-950/40 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-900/60';
+                        const label = a.beat ? `B${this.escapeHTML(a.beat)}` : '—';
+                        const tip = `${a.title}${a.location ? ` @ ${a.location}` : ''}`;
+                        return `<button type="button" class="rounded-full border px-3 py-1 text-[11px] font-extrabold ${chipCls}"
+                            onclick="App.focusTimelineEvent(${Number(a.id)})"
+                            title="${this.escapeHTML(tip)}">${label}</button>`;
+                    }).join('')}
+                </div>`
+                : `<div class="mt-4 rounded-xl border border-dashed border-zinc-800/70 bg-zinc-950/40 px-4 py-3 text-xs font-semibold text-zinc-500">No timeline appearances linked yet. Add this character to events in Timeline.</div>`;
+
+            const canonBadge = c.isCanon
+                ? `<span class="inline-flex items-center rounded-full border border-amber-400/35 bg-amber-400/10 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[0.12em] text-amber-200">Canon</span>`
+                : `<span class="inline-flex items-center rounded-full border border-violet-500/25 bg-violet-500/10 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[0.12em] text-violet-200/80">Draft</span>`;
+
+            const lastLine = last
+                ? `<div class="mt-2 text-xs font-semibold text-zinc-400">Latest: <span class="text-zinc-200">${this.escapeHTML(last.title)}</span> ${last.beat ? `<span class="ml-2 inline-flex items-center rounded-full border border-violet-400/35 bg-violet-500/10 px-2 py-0.5 text-[10px] font-extrabold text-violet-100">Beat ${this.escapeHTML(last.beat)}</span>` : ''}</div>`
+                : '';
+
+            return `
+                <article class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5 shadow-[0_18px_50px_-22px_rgba(0,0,0,0.72)] ring-1 ring-inset ring-violet-500/[0.06]">
+                    <div class="flex items-start justify-between gap-4">
+                        <div class="flex min-w-0 flex-1 items-start gap-3">
+                            <button type="button" class="mt-0.5 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border ${colors.ring} font-black ${colors.accent}"
+                                onclick="App.openCharacterEditor(${id})" title="Open character">
+                                ${ini}
+                            </button>
+                            <div class="min-w-0">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <div class="truncate text-base font-black tracking-tight text-zinc-100">${name}</div>
+                                    ${canonBadge}
+                                </div>
+                                <div class="mt-1 text-xs font-semibold text-zinc-500">${this.escapeHTML(role || '—')}</div>
+                                ${lastLine}
+                            </div>
+                        </div>
+                        <div class="shrink-0">
+                            <span class="inline-flex items-center gap-2 rounded-full border border-zinc-700/80 bg-zinc-950/50 px-3 py-1 text-[10px] font-extrabold uppercase tracking-[0.14em] text-zinc-300">
+                                <span class="h-2.5 w-2.5 rounded-full ${colors.dot}"></span>${this.escapeHTML(String(c.type || 'gray'))}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="mt-4">
+                        <div class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-zinc-500">Current arc stage</div>
+                        <div class="mt-2 text-sm font-semibold leading-relaxed text-zinc-200">${stage}</div>
+                    </div>
+
+                    <div class="mt-4">
+                        <div class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-zinc-500">Current shift</div>
+                        <div class="mt-2 text-sm leading-relaxed text-zinc-300">${shift}</div>
+                    </div>
+
+                    ${bar}
+                    ${chips}
+                </article>`;
+        }).join('');
+
+        root.innerHTML = `<div class="grid grid-cols-1 gap-4 lg:grid-cols-2">${cards}</div>`;
+    },
+    relationshipTypeStyle(rel = {}) {
+        const typeRaw = rel?.type || rel?.label || '';
+        const t = String(typeRaw || '').trim().toLowerCase();
+        const isSecret = Boolean(rel?.secret) || t.includes('secret') || t.includes('hidden');
+        const strengthBase = Number(rel?.strength);
+        const strength = Number.isFinite(strengthBase) ? Math.max(1, Math.min(5, strengthBase)) : 3;
+
+        let color = 'rgba(196,181,253,0.55)'; // violet default
+        if (t.includes('ally') || t.includes('alliance')) color = 'rgba(52,211,153,0.55)'; // emerald
+        if (t.includes('enemy') || t.includes('rival')) color = 'rgba(248,113,113,0.6)'; // rose
+        if (t.includes('blood') || t.includes('family') || t.includes('lineage')) color = 'rgba(251,191,36,0.55)'; // amber
+        if (t.includes('mentor')) color = 'rgba(125,211,252,0.55)'; // sky
+        if (t.includes('marriage') || t.includes('romance') || t.includes('lover')) color = 'rgba(167,139,250,0.65)'; // brighter violet
+
+        return { color, isSecret, strength };
+    },
+
+    buildRelationshipNetworkData() {
+        this.ensureRelationshipStore();
+        const characters = Array.isArray(this.storyData?.characters) ? this.storyData.characters : [];
+        const byName = new Map(characters.map((c) => [String(c.name || '').trim().toLowerCase(), c]));
+
+        const nodes = characters.map((c) => ({
+            id: Number(c.id),
+            name: String(c.name || 'Unknown'),
+            type: String(c.type || 'gray'),
+            role: String(c.role || ''),
+            isCanon: Boolean(c.isCanon)
+        }));
+
+        const links = [];
+        const addLink = (rel) => {
+            const fromId = rel?.fromId;
+            const toId = rel?.toId;
+            const type = rel?.type;
+            const a = Number(fromId);
+            const b = Number(toId);
+            if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return;
+            const key = a < b ? `${a}|${b}|${String(type || '').toLowerCase()}|${String(rel?.id ?? '')}` : `${b}|${a}|${String(type || '').toLowerCase()}|${String(rel?.id ?? '')}`;
+            if (links.some((l) => l._key === key)) return;
+            links.push({
+                id: rel?.id,
+                source: a,
+                target: b,
+                type: String(rel?.type || 'other'),
+                label: String(rel?.label || rel?.type || 'other'),
+                description: String(rel?.description || '').trim(),
+                strength: Number(rel?.strength) || 3,
+                secret: Boolean(rel?.secret),
+                _key: key
+            });
+        };
+
+        const rels = Array.isArray(this.storyData?.relationships) ? this.storyData.relationships : [];
+        if (rels.length) {
+            rels.forEach((r) => {
+                const fromId = r?.fromId ?? byName.get(String(r?.from || '').trim().toLowerCase())?.id;
+                const toId = r?.toId ?? byName.get(String(r?.to || '').trim().toLowerCase())?.id;
+                if (fromId != null && toId != null) addLink({ ...r, fromId, toId });
+            });
+        }
+
+        // Fallback: parse relationship lines embedded in character notes.
+        if (links.length === 0) {
+            const rx = /Relationship\s*\(([^)]+)\)\s*with\s*([^:]+)\s*:\s*(.+)$/i;
+            characters.forEach((c) => {
+                const notes = String(c?.notes || '');
+                notes.split('\n').forEach((line) => {
+                    const m = line.match(rx);
+                    if (!m) return;
+                    const type = String(m[1] || 'other').trim();
+                    const toName = String(m[2] || '').trim().toLowerCase();
+                    const desc = String(m[3] || '').trim();
+                    const to = byName.get(toName);
+                    if (to) addLink({ id: Date.now() + Math.floor(Math.random() * 10000), fromId: c.id, toId: to.id, type, label: type, description: desc, strength: 3, secret: type.toLowerCase().includes('secret') });
+                });
+            });
+        }
+
+        // Final fallback: relatedCharacters without labels.
+        if (links.length === 0) {
+            characters.forEach((c) => {
+                const rel = Array.isArray(c.relatedCharacters) ? c.relatedCharacters : [];
+                rel.forEach((id) => addLink({ id: Date.now() + Math.floor(Math.random() * 10000), fromId: c.id, toId: id, type: 'linked', label: 'linked', description: '', strength: 2, secret: false }));
+            });
+        }
+
+        // Strip internal key.
+        links.forEach((l) => delete l._key);
+        return { nodes, links };
+    },
+
+    renderRelationshipNetworkGraph({ forceRestart = false } = {}) {
+        const svg = document.getElementById('relationshipNetworkSvg');
+        const linksG = document.getElementById('relationshipNetworkLinks');
+        const labelsG = document.getElementById('relationshipNetworkLabels');
+        const nodesG = document.getElementById('relationshipNetworkNodes');
+        const status = document.getElementById('relationshipNetworkStatus');
+        if (!svg || !linksG || !labelsG || !nodesG) return;
+
+        const W = 1200;
+        const H = 520;
+        const pad = 48;
+
+        const { nodes, links } = this.buildRelationshipNetworkData();
+        this.relationshipGraphState.nodes = nodes;
+        this.relationshipGraphState.links = links;
+
+        if (status) {
+            status.innerHTML = `<div class="text-[11px] font-extrabold uppercase tracking-[0.16em] text-zinc-500">Stats</div>
+                <div class="mt-3 text-sm font-semibold text-zinc-200">${nodes.length} character${nodes.length === 1 ? '' : 's'} • ${links.length} connection${links.length === 1 ? '' : 's'}</div>
+                <div class="mt-2 text-xs text-zinc-500">Hover a node to highlight connections. Click to open details.</div>`;
+        }
+
+        const rng = (seed) => {
+            let s = seed | 0;
+            return () => {
+                s = (s * 1664525 + 1013904223) | 0;
+                return ((s >>> 0) % 10000) / 10000;
+            };
+        };
+        const rand = rng(this.relationshipGraphState.seed || 1);
+
+        // Initialize positions if missing.
+        const pos = this.relationshipGraphState.positions;
+        const centerX = W / 2;
+        const centerY = H / 2;
+        const ring = Math.min(W, H) * 0.32;
+        nodes.forEach((n, i) => {
+            if (!pos.has(n.id) || forceRestart) {
+                const a = (i / Math.max(1, nodes.length)) * Math.PI * 2;
+                const x = centerX + Math.cos(a) * ring + (rand() - 0.5) * 90;
+                const y = centerY + Math.sin(a) * ring + (rand() - 0.5) * 70;
+                pos.set(n.id, { x, y, vx: 0, vy: 0 });
+            }
+        });
+
+        const byId = new Map(nodes.map((n) => [n.id, n]));
+        const hovered = this.relationshipGraphState.hoveredId;
+        const query = String(this.relationshipGraphState.searchQuery || '').trim().toLowerCase();
+        const filter = String(this.relationshipGraphState.filter || 'all').toLowerCase();
+
+        const matchesQuery = (n) => !query || String(n?.name || '').toLowerCase().includes(query);
+
+        const linkCategory = (l) => {
+            const t = `${l?.type || ''} ${l?.label || ''} ${l?.description || ''}`.toLowerCase();
+            if (l?.secret || t.includes('secret') || t.includes('hidden')) return 'secret';
+            if (t.includes('blood') || t.includes('family') || t.includes('lineage')) return 'bloodline';
+            if (t.includes('romance') || t.includes('marriage') || t.includes('lover')) return 'romance';
+            if (t.includes('rival') || t.includes('enemy')) return 'rivalry';
+            if (t.includes('ally') || t.includes('alliance')) return 'alliance';
+            if (t.includes('military') || t.includes('guard') || t.includes('commander') || t.includes('soldier')) return 'military';
+            return 'all';
+        };
+
+        const filteredLinks = links.filter((l) => {
+            const cat = linkCategory(l);
+            if (filter !== 'all' && cat !== filter) return false;
+            if (query) {
+                const a = byId.get(l.source);
+                const b = byId.get(l.target);
+                if (!matchesQuery(a) && !matchesQuery(b)) return false;
+            }
+            return true;
+        });
+
+        const neighbor = new Set();
+        if (hovered != null) {
+            filteredLinks.forEach((l) => {
+                if (l.source === hovered) neighbor.add(l.target);
+                if (l.target === hovered) neighbor.add(l.source);
+            });
+        }
+
+        const querySet = new Set(nodes.filter(matchesQuery).map((n) => n.id));
+
+        const nodeColor = (type) => {
+            const t = String(type || '').toLowerCase();
+            if (t === 'friendly') return { fill: '#34d399', stroke: 'rgba(16,185,129,0.55)' };
+            if (t === 'antagonist') return { fill: '#fb7185', stroke: 'rgba(244,63,94,0.55)' };
+            return { fill: '#d4d4d8', stroke: 'rgba(161,161,170,0.45)' };
+        };
+
+        // Render links
+        linksG.innerHTML = filteredLinks.map((l) => {
+            const a = pos.get(l.source);
+            const b = pos.get(l.target);
+            if (!a || !b) return '';
+            const style = this.relationshipTypeStyle(l);
+            const isQueryOn = !query || querySet.has(l.source) || querySet.has(l.target);
+            const isOn = isQueryOn && (hovered == null || l.source === hovered || l.target === hovered || neighbor.has(l.source) || neighbor.has(l.target));
+            const opacity = isOn ? 0.9 : 0.12;
+            const width = 1.6 + (style.strength * 0.9);
+            const dash = style.isSecret ? '8 8' : '';
+            const glow = isOn ? 'filter="url(#relLinkGlow)"' : '';
+            return `<line x1="${a.x.toFixed(2)}" y1="${a.y.toFixed(2)}" x2="${b.x.toFixed(2)}" y2="${b.y.toFixed(2)}"
+                stroke="${style.color}" stroke-width="${width.toFixed(2)}" stroke-linecap="round" stroke-dasharray="${dash}"
+                opacity="${opacity}" ${glow}
+                role="button" tabindex="0"
+                onclick="App.openRelationshipEdgeModal(${Number(l.id)})"
+                onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.openRelationshipEdgeModal(${Number(l.id)});}"/>`;
+        }).join('');
+
+        // Render link labels (lightweight: only when not hovering, or for hovered neighborhood)
+        labelsG.innerHTML = filteredLinks.map((l) => {
+            const a = pos.get(l.source);
+            const b = pos.get(l.target);
+            if (!a || !b) return '';
+            const isOn = hovered == null || l.source === hovered || l.target === hovered || neighbor.has(l.source) || neighbor.has(l.target);
+            if (!isOn) return '';
+            const mx = (a.x + b.x) / 2;
+            const my = (a.y + b.y) / 2;
+            const label = String(l.label || l.type || '').trim();
+            if (!label) return '';
+            return `<text x="${mx.toFixed(2)}" y="${(my - 6).toFixed(2)}" text-anchor="middle"
+                fill="rgba(244,244,245,0.72)" font-size="10.5" font-family="system-ui,-apple-system,sans-serif" font-weight="700"
+                opacity="0.85">${this.escapeHTML(label)}</text>`;
+        }).join('');
+
+        // Render nodes
+        nodesG.innerHTML = nodes.map((n) => {
+            const p = pos.get(n.id);
+            if (!p) return '';
+            const c = nodeColor(n.type);
+            const isQueryMatch = matchesQuery(n);
+            const isActive = (!query || isQueryMatch) && (hovered == null || n.id === hovered || neighbor.has(n.id));
+            const opacity = isActive ? 1 : 0.18;
+            const r = n.isCanon ? 18 : 14;
+            const halo = n.isCanon
+                ? `<circle r="${r + 9}" fill="rgba(251,191,36,0.10)" stroke="rgba(251,191,36,0.28)" stroke-width="2" filter="url(#relNodeGlow)"/>`
+                : `<circle r="${r + 7}" fill="rgba(139,92,246,0.08)" stroke="rgba(139,92,246,0.20)" stroke-width="1.5" filter="url(#relNodeGlow)"/>`;
+            const name = this.escapeHTML(n.name);
+            const isHovered = hovered != null && n.id === hovered;
+            const scale = isHovered ? 1.06 : 1.0;
+            return `
+                <g class="relationship-node" transform="translate(${p.x.toFixed(2)},${p.y.toFixed(2)}) scale(${scale})" opacity="${opacity}"
+                   role="button" tabindex="0"
+                   onmouseenter="App.onRelationshipNodeHover(${n.id})"
+                   onmouseleave="App.onRelationshipNodeHover(null)"
+                   onpointerdown="App.onRelationshipNodePointerDown(event, ${n.id})"
+                   onclick="App.onRelationshipNodeClick(${n.id})"
+                   onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.openCharacterEditor(${n.id});}">
+                  <title>${name}</title>
+                  ${halo}
+                  <circle r="${r}" fill="${c.fill}" stroke="${c.stroke}" stroke-width="${n.isCanon ? 3.0 : 2.3}" ${isHovered ? 'filter="url(#relNodeGlow)"' : ''}/>
+                  <text x="0" y="${r + 18}" text-anchor="middle" fill="rgba(244,244,245,0.9)" font-size="12" font-family="system-ui,-apple-system,sans-serif" font-weight="800">${name}</text>
+                </g>`;
+        }).join('');
+
+        // Start/continue force simulation (lightweight)
+        const needsSim = forceRestart || !this.relationshipGraphState.simRunning;
+        if (!needsSim) return;
+
+        this.stopRelationshipGraphSim();
+        this.relationshipGraphState.simRunning = true;
+
+        const linkPairs = filteredLinks
+            .map((l) => ({ a: l.source, b: l.target, style: this.relationshipTypeStyle(l) }));
+
+        const tick = () => {
+            const P = this.relationshipGraphState.positions;
+            const N = nodes;
+
+            // Physics constants (tuned for "premium calm" motion)
+            const repulse = 2200;
+            const spring = 0.012;
+            const damping = 0.86;
+            const centerPull = 0.0016;
+
+            // Repulsion
+            for (let i = 0; i < N.length; i += 1) {
+                const pi = P.get(N[i].id);
+                if (!pi) continue;
+                for (let j = i + 1; j < N.length; j += 1) {
+                    const pj = P.get(N[j].id);
+                    if (!pj) continue;
+                    let dx = pi.x - pj.x;
+                    let dy = pi.y - pj.y;
+                    const d2 = dx * dx + dy * dy + 80;
+                    const f = repulse / d2;
+                    dx *= f; dy *= f;
+                    pi.vx += dx; pi.vy += dy;
+                    pj.vx -= dx; pj.vy -= dy;
+                }
+            }
+
+            // Springs
+            linkPairs.forEach((lp) => {
+                const a = P.get(lp.a);
+                const b = P.get(lp.b);
+                if (!a || !b) return;
+                const dx = b.x - a.x;
+                const dy = b.y - a.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                const target = 210 / lp.style.strength;
+                const f = (dist - target) * spring;
+                const fx = (dx / dist) * f;
+                const fy = (dy / dist) * f;
+                a.vx += fx; a.vy += fy;
+                b.vx -= fx; b.vy -= fy;
+            });
+
+            // Centering + integrate
+            N.forEach((n) => {
+                const p = P.get(n.id);
+                if (!p) return;
+                p.vx += (centerX - p.x) * centerPull;
+                p.vy += (centerY - p.y) * centerPull;
+                p.vx *= damping;
+                p.vy *= damping;
+                p.x += p.vx;
+                p.y += p.vy;
+
+                // Clamp bounds
+                p.x = Math.max(pad, Math.min(W - pad, p.x));
+                p.y = Math.max(pad, Math.min(H - pad, p.y));
+            });
+
+            // Redraw (without restarting)
+            this.relationshipGraphState.simFrame = requestAnimationFrame(() => {
+                this.relationshipGraphState.simFrame = null;
+                // End simulation when motion is small.
+                const motion = N.reduce((acc, n) => {
+                    const p = P.get(n.id);
+                    return acc + (p ? Math.abs(p.vx) + Math.abs(p.vy) : 0);
+                }, 0);
+                this.renderRelationshipNetworkGraph({ forceRestart: false });
+                if (motion < 0.8) {
+                    this.stopRelationshipGraphSim();
+                } else {
+                    tick();
+                }
+            });
+        };
+
+        tick();
+    },
+
+    onRelationshipNodeHover(id) {
+        const next = id == null ? null : Number(id);
+        this.relationshipGraphState.hoveredId = Number.isFinite(next) ? next : null;
+        // Do not restart the simulation; just re-render for highlight.
+        this.renderRelationshipNetworkGraph({ forceRestart: false });
+    },
+
+    onRelationshipNodeClick(id) {
+        // If user dragged the node, suppress click-to-open.
+        if (this.relationshipGraphState.dragMoved) {
+            this.relationshipGraphState.dragMoved = false;
+            return;
+        }
+        this.openCharacterEditor(Number(id));
+    },
+
+    relationshipSvgPoint(evt) {
+        const svg = document.getElementById('relationshipNetworkSvg');
+        if (!svg) return null;
+        const rect = svg.getBoundingClientRect();
+        const x = ((evt.clientX - rect.left) / rect.width) * 1200;
+        const y = ((evt.clientY - rect.top) / rect.height) * 520;
+        return { x, y };
+    },
+
+    onRelationshipNodePointerDown(evt, id) {
+        try { evt.preventDefault(); } catch (e) { /* ignore */ }
+        const svg = document.getElementById('relationshipNetworkSvg');
+        if (!svg) return;
+        const nid = Number(id);
+        if (!Number.isFinite(nid)) return;
+        this.relationshipGraphState.draggingId = nid;
+        this.relationshipGraphState.dragMoved = false;
+
+        const move = (e) => {
+            const p = this.relationshipSvgPoint(e);
+            if (!p) return;
+            const pos = this.relationshipGraphState.positions.get(nid) || { x: p.x, y: p.y, vx: 0, vy: 0 };
+            pos.x = p.x;
+            pos.y = p.y;
+            pos.vx = 0;
+            pos.vy = 0;
+            this.relationshipGraphState.positions.set(nid, pos);
+            this.relationshipGraphState.dragMoved = true;
+            this.stopRelationshipGraphSim();
+            this.renderRelationshipNetworkGraph({ forceRestart: false });
+        };
+
+        const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+            const id2 = this.relationshipGraphState.draggingId;
+            this.relationshipGraphState.draggingId = null;
+            if (id2 != null) {
+                this.persistRelationshipGraphPositions();
+            }
+        };
+
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+    },
+
+    persistRelationshipGraphPositions() {
+        this.ensureRelationshipStore();
+        const obj = {};
+        this.relationshipGraphState.positions.forEach((p, id) => {
+            obj[String(id)] = { x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 };
+        });
+        this.storyData.relationshipGraphLayout.positions = obj;
+        StorageService.saveStoryData(this.storyData);
+    },
+
+    openRelationshipEdgeModal(relId) {
+        this.ensureRelationshipStore();
+        const id = Number(relId);
+        if (!Number.isFinite(id)) return;
+
+        const rel = (this.storyData.relationships || []).find(r => Number(r?.id) === id);
+        if (!rel) return;
+
+        const from = (this.storyData.characters || []).find(c => Number(c?.id) === Number(rel.fromId));
+        const to = (this.storyData.characters || []).find(c => Number(c?.id) === Number(rel.toId));
+
+        const setVal = (elId, val) => {
+            const el = document.getElementById(elId);
+            if (el) el.value = val;
+        };
+        const setText = (elId, val) => {
+            const el = document.getElementById(elId);
+            if (el) el.textContent = val;
+        };
+
+        setText('relEdgeTitle', `${from?.name || rel.from || 'Unknown'} ↔ ${to?.name || rel.to || 'Unknown'}`);
+        setVal('relEdgeType', String(rel.type || 'other'));
+        setVal('relEdgeLabel', String(rel.label || rel.type || ''));
+        setVal('relEdgeStrength', String(rel.strength ?? 3));
+        setVal('relEdgeSecret', rel.secret ? '1' : '');
+        setVal('relEdgeDescription', String(rel.description || ''));
+        setText('relEdgeStrengthValue', String(rel.strength ?? 3));
+        document.getElementById('relationshipEdgeModal')?.classList.add('active');
+        document.getElementById('relationshipEdgeModal')?.setAttribute('data-rel-id', String(id));
+    },
+
+    closeRelationshipEdgeModal() {
+        document.getElementById('relationshipEdgeModal')?.classList.remove('active');
+    },
+
+    onRelEdgeStrengthInput(val) {
+        const el = document.getElementById('relEdgeStrengthValue');
+        if (el) el.textContent = String(val);
+    },
+
+    saveRelationshipEdgeEdits() {
+        this.ensureRelationshipStore();
+        const modal = document.getElementById('relationshipEdgeModal');
+        const id = Number(modal?.getAttribute('data-rel-id'));
+        if (!Number.isFinite(id)) return;
+
+        const rel = (this.storyData.relationships || []).find(r => Number(r?.id) === id);
+        if (!rel) return;
+
+        const type = String(document.getElementById('relEdgeType')?.value || 'other').trim();
+        const label = String(document.getElementById('relEdgeLabel')?.value || type).trim();
+        const strength = Number(document.getElementById('relEdgeStrength')?.value || 3);
+        const secret = Boolean(document.getElementById('relEdgeSecret')?.checked);
+        const description = String(document.getElementById('relEdgeDescription')?.value || '').trim();
+
+        rel.type = type || 'other';
+        rel.label = label || rel.type;
+        rel.strength = Number.isFinite(strength) ? Math.max(1, Math.min(5, strength)) : 3;
+        rel.secret = secret;
+        rel.description = description;
+        rel.updatedAt = new Date().toISOString();
+
+        StorageService.saveStoryData(this.storyData);
+        this.renderRelationshipNetworkGraph({ forceRestart: false });
+        this.closeRelationshipEdgeModal();
+    },
+
+    openAddRelationshipModal() {
+        this.ensureRelationshipStore();
+        const chars = Array.isArray(this.storyData?.characters) ? this.storyData.characters : [];
+        const fromSel = document.getElementById('addRelFrom');
+        const toSel = document.getElementById('addRelTo');
+        if (fromSel && toSel) {
+            const options = chars.map(c => `<option value="${Number(c.id)}">${this.escapeHTML(String(c.name || 'Unknown'))}</option>`).join('');
+            fromSel.innerHTML = options;
+            toSel.innerHTML = options;
+        }
+        const typeEl = document.getElementById('addRelType');
+        if (typeEl) typeEl.value = 'alliance';
+        const labelEl = document.getElementById('addRelLabel');
+        if (labelEl) labelEl.value = 'Alliance';
+        const strengthEl = document.getElementById('addRelStrength');
+        if (strengthEl) strengthEl.value = '3';
+        const secret = document.getElementById('addRelSecret');
+        if (secret) secret.checked = false;
+        const descEl = document.getElementById('addRelDescription');
+        if (descEl) descEl.value = '';
+        const strengthVal = document.getElementById('addRelStrengthValue');
+        if (strengthVal) strengthVal.textContent = '3';
+        document.getElementById('addRelationshipModal')?.classList.add('active');
+    },
+
+    closeAddRelationshipModal() {
+        document.getElementById('addRelationshipModal')?.classList.remove('active');
+    },
+
+    onAddRelStrengthInput(val) {
+        const el = document.getElementById('addRelStrengthValue');
+        if (el) el.textContent = String(val);
+    },
+
+    saveNewRelationship() {
+        this.ensureRelationshipStore();
+        const fromId = Number(document.getElementById('addRelFrom')?.value);
+        const toId = Number(document.getElementById('addRelTo')?.value);
+        if (!Number.isFinite(fromId) || !Number.isFinite(toId) || fromId === toId) {
+            alert('Pick two different characters.');
+            return;
+        }
+        const from = (this.storyData.characters || []).find(c => Number(c?.id) === fromId);
+        const to = (this.storyData.characters || []).find(c => Number(c?.id) === toId);
+        const type = String(document.getElementById('addRelType')?.value || 'other').trim();
+        const label = String(document.getElementById('addRelLabel')?.value || type).trim();
+        const strength = Number(document.getElementById('addRelStrength')?.value || 3);
+        const secret = Boolean(document.getElementById('addRelSecret')?.checked);
+        const description = String(document.getElementById('addRelDescription')?.value || '').trim();
+
+        const rel = {
+            id: Date.now(),
+            fromId,
+            toId,
+            from: from?.name || '',
+            to: to?.name || '',
+            type: type || 'other',
+            label: label || type || 'other',
+            description,
+            strength: Number.isFinite(strength) ? Math.max(1, Math.min(5, strength)) : 3,
+            secret,
+            updatedAt: new Date().toISOString()
+        };
+        this.storyData.relationships.push(rel);
+
+        // Keep relatedCharacters linked (bidirectional) for other parts of the app.
+        if (from && to) {
+            from.relatedCharacters = Array.isArray(from.relatedCharacters) ? from.relatedCharacters : [];
+            to.relatedCharacters = Array.isArray(to.relatedCharacters) ? to.relatedCharacters : [];
+            if (!from.relatedCharacters.includes(to.id)) from.relatedCharacters.push(to.id);
+            if (!to.relatedCharacters.includes(from.id)) to.relatedCharacters.push(from.id);
+        }
+
+        StorageService.saveStoryData(this.storyData);
+        this.render();
+        this.closeAddRelationshipModal();
     },
 
     refreshStoryWorldMap() {
@@ -4723,6 +6646,7 @@ const App = {
             'master-document': 'Master Document',
             visualizer: 'AI Visualizer',
             'ai-actions': 'AI Action Items',
+            'ai-queue': 'AI Queue',
             'ai-settings': 'AI Settings'
         };
         return labels[tabName] || 'Work Items';
@@ -5516,6 +7440,113 @@ function createRelationshipModal() {
     document.getElementById('modalsContainer').innerHTML += html;
 }
 
+function createRelationshipEdgeModal() {
+    const html = `
+        <div id="relationshipEdgeModal" class="ai-settings-modal" onclick="if(event.target && event.target.id==='relationshipEdgeModal'){ App.closeRelationshipEdgeModal(); }">
+            <div class="ai-settings-content" style="max-width: 720px;">
+                <span class="modal-close" onclick="App.closeRelationshipEdgeModal()">&times;</span>
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">Relationship</div>
+                <h2 id="relEdgeTitle" class="mt-2 text-2xl font-black tracking-tight">Relationship</h2>
+                <p class="mt-2 text-sm leading-relaxed text-zinc-500">Edit type, label, strength, secrecy, and description. This updates the Relationship Network graph.</p>
+
+                <div class="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                        <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">Type</label>
+                        <input id="relEdgeType" class="form-input w-full" placeholder="alliance / rivalry / romance / bloodline / mentor / military / other" />
+                    </div>
+                    <div>
+                        <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">Label</label>
+                        <input id="relEdgeLabel" class="form-input w-full" placeholder="Short readable label (e.g. Secret Protector)" />
+                    </div>
+                </div>
+
+                <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                        <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">Strength <span id="relEdgeStrengthValue" class="ml-2 text-violet-300">3</span></label>
+                        <input id="relEdgeStrength" type="range" min="1" max="5" step="1" class="w-full" oninput="App.onRelEdgeStrengthInput(this.value)" />
+                    </div>
+                    <div class="flex items-end gap-2">
+                        <label class="inline-flex items-center gap-2 rounded-xl border border-zinc-800/80 bg-zinc-950/50 px-4 py-3 text-sm font-semibold text-zinc-200">
+                            <input id="relEdgeSecret" type="checkbox" class="h-4 w-4" />
+                            Secret / hidden (dashed)
+                        </label>
+                    </div>
+                </div>
+
+                <div class="mt-4">
+                    <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">Description</label>
+                    <textarea id="relEdgeDescription" class="form-input w-full" rows="5" placeholder="Full relationship description..."></textarea>
+                </div>
+
+                <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                    <button type="button" class="rounded-xl bg-violet-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.saveRelationshipEdgeEdits()">Save</button>
+                    <button type="button" class="topbar-ghost" onclick="App.closeRelationshipEdgeModal()">Cancel</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+function createAddRelationshipModal() {
+    const html = `
+        <div id="addRelationshipModal" class="ai-settings-modal" onclick="if(event.target && event.target.id==='addRelationshipModal'){ App.closeAddRelationshipModal(); }">
+            <div class="ai-settings-content" style="max-width: 760px;">
+                <span class="modal-close" onclick="App.closeAddRelationshipModal()">&times;</span>
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">Relationship</div>
+                <h2 class="mt-2 text-2xl font-black tracking-tight">➕ Add New Relationship</h2>
+                <p class="mt-2 text-sm leading-relaxed text-zinc-500">Create a new connection between two characters. This will appear immediately in the Relationship Network.</p>
+
+                <div class="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                        <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">From</label>
+                        <select id="addRelFrom" class="form-input w-full"></select>
+                    </div>
+                    <div>
+                        <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">To</label>
+                        <select id="addRelTo" class="form-input w-full"></select>
+                    </div>
+                </div>
+
+                <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                        <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">Type</label>
+                        <input id="addRelType" class="form-input w-full" placeholder="alliance / rivalry / romance / bloodline / mentor / military / other" />
+                    </div>
+                    <div>
+                        <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">Label</label>
+                        <input id="addRelLabel" class="form-input w-full" placeholder="Short readable label (e.g. Forced Marriage)" />
+                    </div>
+                </div>
+
+                <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                        <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">Strength <span id="addRelStrengthValue" class="ml-2 text-violet-300">3</span></label>
+                        <input id="addRelStrength" type="range" min="1" max="5" step="1" class="w-full" oninput="App.onAddRelStrengthInput(this.value)" />
+                    </div>
+                    <div class="flex items-end gap-2">
+                        <label class="inline-flex items-center gap-2 rounded-xl border border-zinc-800/80 bg-zinc-950/50 px-4 py-3 text-sm font-semibold text-zinc-200">
+                            <input id="addRelSecret" type="checkbox" class="h-4 w-4" />
+                            Secret / hidden (dashed)
+                        </label>
+                    </div>
+                </div>
+
+                <div class="mt-4">
+                    <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">Description</label>
+                    <textarea id="addRelDescription" class="form-input w-full" rows="5" placeholder="Full relationship description..."></textarea>
+                </div>
+
+                <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                    <button type="button" class="rounded-xl bg-violet-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.saveNewRelationship()">Save relationship</button>
+                    <button type="button" class="topbar-ghost" onclick="App.closeAddRelationshipModal()">Cancel</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
 // Command palette modal
 function createCommandPaletteModal() {
     const html = `
@@ -5599,6 +7630,8 @@ createAISettingsModal();
 createImportNotesModal();
 createAnalyzeImportModal();
 createRelationshipModal();
+createRelationshipEdgeModal();
+createAddRelationshipModal();
 createCommandPaletteModal();
 createCanonConfirmModal();
 createDraftMergeModal();
@@ -5627,6 +7660,126 @@ function createStoryWorldMapGrokModal() {
 }
 
 createStoryWorldMapGrokModal();
+
+function createIntegrityCheckModal() {
+    const html = `
+        <div id="integrityCheckModal" class="ai-settings-modal" onclick="if(event.target && event.target.id==='integrityCheckModal'){ App.closeIntegrityCheckModal(); }">
+            <div class="ai-settings-content" style="max-width: 920px;">
+                <span class="modal-close" onclick="App.closeIntegrityCheckModal()">&times;</span>
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">Integrity</div>
+                <h2 class="mt-2 text-2xl font-black tracking-tight">🛡️ Full Story Integrity Check</h2>
+                <p class="mt-2 max-w-3xl text-sm leading-relaxed text-zinc-500">Runs on your local text AI (LM Studio / Ollama) and checks continuity, canon protection, Tang-era realism, logistics, and contradictions against your Master Document.</p>
+                <div id="integrityCheckMeta" class="mt-4"></div>
+                <div class="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                    <button id="integrityCheckApplyBtn" type="button" class="rounded-xl bg-violet-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.applyIntegrityFixes()">Apply Suggested Fixes</button>
+                    <button type="button" class="topbar-ghost" onclick="App.closeIntegrityCheckModal()">Close</button>
+                    <div id="integrityCheckApplyStatus" class="text-sm"></div>
+                </div>
+                <div id="integrityCheckBody" class="mt-6"></div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+createIntegrityCheckModal();
+
+function createTangAccuracyModal() {
+    const html = `
+        <div id="tangAccuracyModal" class="ai-settings-modal" onclick="if(event.target && event.target.id==='tangAccuracyModal'){ App.closeTangAccuracyModal(); }">
+            <div class="ai-settings-content" style="max-width: 920px;">
+                <span class="modal-close" onclick="App.closeTangAccuracyModal()">&times;</span>
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">History</div>
+                <h2 class="mt-2 text-2xl font-black tracking-tight">🏮 Historical Tang Accuracy Checker</h2>
+                <p class="mt-2 max-w-3xl text-sm leading-relaxed text-zinc-500">Strict consultant pass for <strong>Kaiyuan era (720 AD)</strong>: clothing, etiquette, hierarchy, military logistics, tech level, daily life, and anachronisms—while respecting time-travel modernization.</p>
+                <div id="tangAccuracyMeta" class="mt-4"></div>
+                <div class="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                    <button id="tangAccuracyCopyBtn" type="button" class="rounded-xl bg-violet-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.copyTangAccuracyReport()">Copy Report</button>
+                    <button type="button" class="topbar-ghost" onclick="App.closeTangAccuracyModal()">Close</button>
+                    <div id="tangAccuracyCopyStatus" class="text-sm"></div>
+                </div>
+                <div id="tangAccuracyBody" class="mt-6"></div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+createTangAccuracyModal();
+
+function createMasterScriptModal() {
+    const html = `
+        <div id="masterScriptModal" class="ai-settings-modal" onclick="if(event.target && event.target.id==='masterScriptModal'){ App.closeMasterScriptModal(); }">
+            <div class="ai-settings-content" style="max-width: 980px;">
+                <span class="modal-close" onclick="App.closeMasterScriptModal()">&times;</span>
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">Master script</div>
+                <h2 class="mt-2 text-2xl font-black tracking-tight">📄 Master Script / Series Treatment</h2>
+                <p class="mt-2 max-w-3xl text-sm leading-relaxed text-zinc-500">Living big-picture overview generated from your current story data via local text AI (LM Studio / Ollama).</p>
+                <div id="masterScriptMeta" class="mt-4"></div>
+
+                <div class="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                    <button id="masterScriptCopyBtn" type="button" class="rounded-xl bg-violet-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.copyMasterScriptToClipboard()">Copy to Clipboard</button>
+                    <button id="masterScriptSaveBtn" type="button" class="rounded-xl border border-emerald-400/25 bg-emerald-400/10 px-5 py-3 text-sm font-extrabold text-emerald-100 shadow-sm ring-1 ring-inset ring-emerald-400/15 transition hover:bg-emerald-400/15 active:scale-[0.99]" onclick="App.saveMasterScriptAsMasterDocument()">Save as Master Document</button>
+                    <button id="masterScriptRegenBtn" type="button" class="rounded-xl border border-zinc-600/90 bg-zinc-900/60 px-5 py-3 text-sm font-extrabold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800/80 active:scale-[0.99]" onclick="App.generateOrUpdateMasterScript()">Regenerate</button>
+                    <button type="button" class="topbar-ghost" onclick="App.closeMasterScriptModal()">Close</button>
+                    <div id="masterScriptCopyStatus" class="text-sm"></div>
+                </div>
+
+                <textarea id="masterScriptText" class="form-input mt-6 w-full resize-y rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 font-mono text-xs leading-relaxed text-zinc-100 shadow-inner shadow-black/30 outline-none" rows="26" readonly spellcheck="false" style="white-space: pre;"></textarea>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+createMasterScriptModal();
+
+function createVoiceMemoModal() {
+    const html = `
+        <div id="voiceMemoModal" class="ai-settings-modal" onclick="if(event.target && event.target.id==='voiceMemoModal'){ App.closeVoiceMemoModal(); }">
+            <div class="ai-settings-content" style="max-width: 980px;">
+                <span class="modal-close" onclick="App.closeVoiceMemoModal()">&times;</span>
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">Voice memo</div>
+                <h2 class="mt-2 text-2xl font-black tracking-tight">🎙️ Process Spoken Idea / Voice Memo</h2>
+                <p class="mt-2 max-w-3xl text-sm leading-relaxed text-zinc-500">Paste a phone transcription, process with your local LLM, then apply the suggested beats/tasks directly to your story.</p>
+
+                <div class="mt-5">
+                    <label class="mb-2 block text-xs font-extrabold uppercase tracking-wide text-zinc-500">Paste voice memo transcription here…</label>
+                    <textarea id="voiceMemoText" class="form-input w-full resize-y rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 font-mono text-xs leading-relaxed text-zinc-100 shadow-inner shadow-black/30 outline-none" rows="10" spellcheck="false" placeholder="Paste voice memo transcription here…"></textarea>
+                </div>
+
+                <label class="mt-4 inline-flex items-center gap-2 rounded-xl border border-zinc-800/80 bg-zinc-950/50 px-4 py-3 text-sm font-semibold text-zinc-200">
+                    <input id="voiceMemoRefIssues" type="checkbox" class="h-4 w-4" />
+                    Reference latest Story Integrity / Tang Accuracy issues
+                </label>
+
+                <div class="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                    <button type="button" class="rounded-xl bg-violet-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.processVoiceMemoWithLocalLLM()">Process with Local LLM</button>
+                    <button id="voiceMemoCopyBtn" type="button" class="rounded-xl border border-zinc-600/90 bg-zinc-900/60 px-5 py-3 text-sm font-extrabold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800/80 active:scale-[0.99]" onclick="App.copyVoiceMemoResult()">Copy Output</button>
+                    <button type="button" class="topbar-ghost" onclick="App.closeVoiceMemoModal()">Close</button>
+                    <div id="voiceMemoCopyStatus" class="text-sm"></div>
+                </div>
+
+                <div id="voiceMemoMeta" class="mt-4"></div>
+
+                <div id="voiceMemoApplyRow" class="mt-4 hidden rounded-2xl border border-violet-500/25 bg-violet-500/[0.06] p-4">
+                    <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-violet-200/80">Apply suggested actions</div>
+                    <div class="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                        <button type="button" class="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-2.5 text-sm font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.applySuggestedActionsToTimeline()">Add timeline beats</button>
+                        <button type="button" class="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm font-extrabold text-emerald-100 hover:bg-emerald-500/15" onclick="App.applySuggestedActionsToWorkItems()">Add work items</button>
+                        <button type="button" class="rounded-xl border border-violet-500/35 bg-violet-600/15 px-4 py-2.5 text-sm font-extrabold text-violet-100 hover:bg-violet-600/20" onclick="App.applySuggestedActionsToCharacterArcs()">Update character arcs</button>
+                    </div>
+                    <div class="mt-2 text-xs font-semibold text-zinc-500">These buttons apply from the newest “Voice memo processed” report (draft-only).</div>
+                </div>
+
+                <div id="voiceMemoResults" class="mt-6"></div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+createVoiceMemoModal();
 
 // Start the application
 App.init();

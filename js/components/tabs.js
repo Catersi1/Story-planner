@@ -9,6 +9,7 @@ import { renderMasterDocument } from './MasterDocument.js';
 import { renderVisualizer } from './Visualizer.js';
 import { renderAIActions } from './AIActions.js';
 import { renderAISettings } from './AISettings.js';
+import { renderAIQueue } from './AIQueue.js';
 
 export const TAB_RENDERERS = {
   dashboard: renderDashboard,
@@ -21,6 +22,7 @@ export const TAB_RENDERERS = {
   'master-document': renderMasterDocument,
   visualizer: renderVisualizer,
   'ai-actions': renderAIActions,
+  'ai-queue': renderAIQueue,
   'ai-settings': renderAISettings
 };
 
