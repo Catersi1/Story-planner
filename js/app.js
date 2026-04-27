@@ -3673,11 +3673,47 @@ const App = {
 
     ensureStoryWorldMapGallery() {
         if (!this.storyData.storyWorldMapGallery || typeof this.storyData.storyWorldMapGallery !== 'object') {
-            this.storyData.storyWorldMapGallery = { version: 1, items: [] };
+            this.storyData.storyWorldMapGallery = { version: 1, items: [], activeImageUrl: null };
         }
         if (!Array.isArray(this.storyData.storyWorldMapGallery.items)) {
             this.storyData.storyWorldMapGallery.items = [];
         }
+        if (typeof this.storyData.storyWorldMapGallery.activeImageUrl !== 'string') {
+            this.storyData.storyWorldMapGallery.activeImageUrl = this.storyData.storyWorldMapGallery.activeImageUrl == null
+                ? null
+                : String(this.storyData.storyWorldMapGallery.activeImageUrl);
+        }
+    },
+
+    /**
+     * If user has a saved realm map image, use it as the visible "atlas" background
+     * behind the interactive SVG pins/paths.
+     */
+    applyActiveStoryWorldMapBackground() {
+        const wrap = document.getElementById('ghostBorderStoryMapWrap');
+        const svg = document.getElementById('ghostBorderStoryMapSvg');
+        if (!wrap) return;
+        this.ensureStoryWorldMapGallery();
+
+        const active = String(this.storyData.storyWorldMapGallery.activeImageUrl || '').trim();
+        const fallback = String(this.storyData.storyWorldMapGallery.items?.[0]?.imageUrl || '').trim();
+        const url = active || fallback;
+
+        if (!url) {
+            wrap.style.removeProperty('background-image');
+            wrap.style.removeProperty('background-size');
+            wrap.style.removeProperty('background-position');
+            wrap.style.removeProperty('background-repeat');
+            if (svg) svg.style.background = '#0f0f0f';
+            return;
+        }
+
+        wrap.style.backgroundImage = `url("${url.replace(/"/g, '\\"')}")`;
+        wrap.style.backgroundSize = 'cover';
+        wrap.style.backgroundPosition = 'center';
+        wrap.style.backgroundRepeat = 'no-repeat';
+        // Let the uploaded image be the background; pins/paths remain interactive above it.
+        if (svg) svg.style.background = 'transparent';
     },
 
     renderStoryWorldMapGallery() {
@@ -3692,7 +3728,7 @@ const App = {
         if (items.length === 0) {
             el.innerHTML = `
                 <div class="rounded-xl border border-dashed border-zinc-700/60 bg-zinc-950/40 px-4 py-10 text-center text-xs text-zinc-500">
-                    No saved map images yet. Use <strong class="text-zinc-300">Fetch map via image API</strong> above — results persist with your story.
+                    No saved map images yet. Use <strong class="text-zinc-300">Upload image</strong>, <strong class="text-zinc-300">Add image URL</strong>, or <strong class="text-zinc-300">Fetch via image API</strong> above — results persist with your story.
                 </div>`;
             return;
         }
@@ -3711,6 +3747,100 @@ const App = {
                     </figure>`;
         }).join('')}
             </div>`;
+    },
+
+    openStoryWorldMapGalleryUpload() {
+        const input = document.getElementById('storyWorldMapGalleryUploadInput');
+        if (input) input.click();
+    },
+
+    onStoryWorldMapGalleryFileSelected(file) {
+        const status = document.getElementById('storyWorldMapAiStatus');
+        const panel = document.getElementById('storyWorldMapAiPanel');
+        try {
+            if (!file) return;
+            if (!String(file.type || '').startsWith('image/')) {
+                throw new Error('Please choose an image file (PNG/JPG/WebP).');
+            }
+            if (file.size > 8 * 1024 * 1024) {
+                throw new Error('Image is too large. Please use a file under 8MB.');
+            }
+            const reader = new FileReader();
+            reader.onload = () => {
+                const url = String(reader.result || '').trim();
+                if (!url) {
+                    if (status) status.innerHTML = '<div class="ai-status disconnected">❌ Could not read image.</div>';
+                    return;
+                }
+                const prompt = String(document.getElementById('storyWorldMapGrokModalPrompt')?.value || '').trim();
+                this.ensureStoryWorldMapGallery();
+                this.storyData.storyWorldMapGallery.items.unshift({
+                    id: Date.now(),
+                    createdAt: new Date().toISOString(),
+                    imageUrl: url,
+                    source: 'upload',
+                    prompt
+                });
+                // Make the uploaded image the current atlas background.
+                this.storyData.storyWorldMapGallery.activeImageUrl = url;
+                this.storyData.storyWorldMapGallery.items = this.storyData.storyWorldMapGallery.items.slice(0, 36);
+                this.save();
+                this.renderStoryWorldMapGallery();
+                this.applyActiveStoryWorldMapBackground();
+                this.renderGhostBorderInteractiveMap();
+                if (panel) {
+                    panel.classList.remove('hidden');
+                    panel.innerHTML = `
+                        <div class="mb-3 text-xs font-extrabold uppercase tracking-wide text-violet-300/90">Latest realm map</div>
+                        <img src="${this.escapeHTML(url)}" alt="Uploaded story world map" loading="lazy" />
+                        <p class="mt-3 text-xs leading-relaxed text-zinc-500">Saved to your story gallery below.</p>`;
+                }
+                if (status) status.innerHTML = '<div class="ai-status connected">✅ Map image saved to Realm Atlas gallery.</div>';
+            };
+            reader.onerror = () => {
+                if (status) status.innerHTML = '<div class="ai-status disconnected">❌ Could not read image.</div>';
+            };
+            reader.readAsDataURL(file);
+        } catch (err) {
+            if (status) status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(err.message || String(err))}</div>`;
+        }
+    },
+
+    addStoryWorldMapGalleryByUrl() {
+        const status = document.getElementById('storyWorldMapAiStatus');
+        const panel = document.getElementById('storyWorldMapAiPanel');
+        try {
+            const raw = prompt('Paste an image URL (https://...) or a data:image/... URL:');
+            const url = String(raw || '').trim();
+            if (!url) return;
+            const ok = url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:image/');
+            if (!ok) throw new Error('URL must start with http(s):// or data:image/.');
+            const promptText = String(document.getElementById('storyWorldMapGrokModalPrompt')?.value || '').trim();
+            this.ensureStoryWorldMapGallery();
+            this.storyData.storyWorldMapGallery.items.unshift({
+                id: Date.now(),
+                createdAt: new Date().toISOString(),
+                imageUrl: url,
+                source: 'url',
+                prompt: promptText
+            });
+            this.storyData.storyWorldMapGallery.activeImageUrl = url;
+            this.storyData.storyWorldMapGallery.items = this.storyData.storyWorldMapGallery.items.slice(0, 36);
+            this.save();
+            this.renderStoryWorldMapGallery();
+            this.applyActiveStoryWorldMapBackground();
+            this.renderGhostBorderInteractiveMap();
+            if (panel) {
+                panel.classList.remove('hidden');
+                panel.innerHTML = `
+                    <div class="mb-3 text-xs font-extrabold uppercase tracking-wide text-violet-300/90">Latest realm map</div>
+                    <img src="${this.escapeHTML(url)}" alt="Saved story world map" loading="lazy" />
+                    <p class="mt-3 text-xs leading-relaxed text-zinc-500">Saved to your story gallery below.</p>`;
+            }
+            if (status) status.innerHTML = '<div class="ai-status connected">✅ Map image saved to Realm Atlas gallery.</div>';
+        } catch (err) {
+            if (status) status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(err.message || String(err))}</div>`;
+        }
     },
 
     async copyStoryWorldMapGrokPrompt() {
@@ -3858,6 +3988,7 @@ const App = {
         if (!mount) {
             this.syncStoryWorldMapGrokPromptUI();
             this.renderStoryWorldMapGallery();
+            this.applyActiveStoryWorldMapBackground();
             return;
         }
 
@@ -4002,6 +4133,7 @@ const App = {
 </svg>`;
         this.syncStoryWorldMapGrokPromptUI();
         this.renderStoryWorldMapGallery();
+        this.applyActiveStoryWorldMapBackground();
         } finally {
             this.renderGhostBorderInteractiveMap();
         }
@@ -4039,9 +4171,12 @@ const App = {
                 imageUrl,
                 createdAt: new Date().toISOString()
             });
+            this.storyData.storyWorldMapGallery.activeImageUrl = imageUrl;
             this.storyData.storyWorldMapGallery.items = this.storyData.storyWorldMapGallery.items.slice(0, 36);
             StorageService.saveStoryData(this.storyData);
             this.renderStoryWorldMapGallery();
+            this.applyActiveStoryWorldMapBackground();
+            this.renderGhostBorderInteractiveMap();
 
             panel.classList.remove('hidden');
             panel.innerHTML = `
@@ -5481,8 +5616,10 @@ function createStoryWorldMapGrokModal() {
                 <textarea id="storyWorldMapGrokModalPrompt" readonly rows="22" spellcheck="false" class="form-input story-world-map-prompt-text mt-4 min-h-[14rem] w-full resize-y rounded-xl border border-zinc-700/90 bg-zinc-900/80 px-4 py-3 text-sm leading-relaxed text-zinc-100 shadow-inner shadow-black/30 dark:border-zinc-700 dark:bg-zinc-900/80 dark:text-zinc-100" aria-label="Grok Imagine world map prompt"></textarea>
                 <div id="storyWorldMapGrokModalActions" class="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                     <button type="button" class="w-full rounded-xl bg-violet-600 px-6 py-3.5 text-base font-extrabold text-white shadow-lg shadow-violet-950/50 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:brightness-105 active:scale-[0.99] sm:w-auto" onclick="App.copyStoryWorldMapGrokModalPrompt()">Copy Prompt to Clipboard</button>
+                    <button type="button" class="w-full rounded-xl border border-zinc-600/90 bg-zinc-900/60 px-6 py-3 text-sm font-extrabold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800/80 sm:w-auto" onclick="App.openStoryWorldMapGalleryUpload()">Add finished image…</button>
                     <button type="button" class="w-full rounded-xl border border-zinc-600/90 bg-zinc-900/60 px-6 py-3 text-sm font-extrabold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800/80 sm:w-auto" onclick="App.closeStoryWorldMapGrokModal()">Close</button>
                 </div>
+                <input id="storyWorldMapGalleryUploadInput" type="file" accept="image/*" class="hidden" onchange="App.onStoryWorldMapGalleryFileSelected(this.files?.[0] || null); this.value='';" />
             </div>
         </div>
     `;

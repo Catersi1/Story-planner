@@ -9,6 +9,28 @@ export const AIService = {
     settings: StorageService.loadAISettings(),
     connected: false,
     availableModels: [],
+    _defaultTimeoutMs: 15000,
+
+    /**
+     * Fetch wrapper with AbortController timeout.
+     * Local model servers can hang indefinitely (especially when a model is loading),
+     * so we enforce a UI-safe timeout and surface a useful error.
+     */
+    async fetchWithTimeout(url, options = {}, timeoutMs = this._defaultTimeoutMs) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const merged = { ...(options || {}), signal: controller.signal };
+            return await fetch(url, merged);
+        } catch (error) {
+            if (error?.name === 'AbortError') {
+                throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    },
 
     /**
      * Parse host input and build normalized connection config.
@@ -86,7 +108,11 @@ export const AIService = {
     async checkConnection() {
         try {
             const endpoint = this.settings.platform === 'lmstudio' ? '/v1/models' : '/api/tags';
-            const response = await fetch(`${this.getBaseURL()}${endpoint}`, { method: 'GET' });
+            const response = await this.fetchWithTimeout(
+                `${this.getBaseURL()}${endpoint}`,
+                { method: 'GET' },
+                5000
+            );
             this.connected = response.ok;
             
             if (this.connected) {
@@ -104,7 +130,11 @@ export const AIService = {
     async loadAvailableModels() {
         try {
             const endpoint = this.settings.platform === 'lmstudio' ? '/v1/models' : '/api/tags';
-            const response = await fetch(`${this.getBaseURL()}${endpoint}`);
+            const response = await this.fetchWithTimeout(
+                `${this.getBaseURL()}${endpoint}`,
+                { method: 'GET' },
+                7000
+            );
             
             if (response.ok) {
                 const data = await response.json();
@@ -227,11 +257,16 @@ export const AIService = {
 
             headers = { 'Content-Type': 'application/json' };
 
-            const response = await fetch(`${baseURL}${endpoint}`, {
-                method: 'POST',
-                headers,
-                body
-            });
+            const response = await this.fetchWithTimeout(
+                `${baseURL}${endpoint}`,
+                {
+                    method: 'POST',
+                    headers,
+                    body
+                },
+                // Larger generations can take a bit; still avoid "hang forever".
+                Math.max(this._defaultTimeoutMs, 25000)
+            );
 
             if (!response.ok) {
                 let errorDetails = '';
@@ -288,6 +323,9 @@ export const AIService = {
             console.error('AI Service error:', error);
             if (error && error.message === 'Failed to fetch') {
                 throw new Error('Browser could not reach the local AI API (likely CORS). Enable CORS/browser access in LM Studio Local Server settings.');
+            }
+            if (typeof error?.message === 'string' && error.message.toLowerCase().includes('timed out')) {
+                throw new Error('Local AI request timed out. Your model server may be loading or stuck. Try “Test Connection” in AI Settings, or restart LM Studio / Ollama.');
             }
             throw error;
         }

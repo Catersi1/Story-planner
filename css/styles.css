@@ -722,6 +722,20 @@ body[data-theme="dark"] .timeline-event .drag-handle {
     max-height: min(52vh, 32rem);
 }
 
+/* Story World Map prompt textarea must override .form-input light theme background,
+   otherwise it becomes white-on-white in light mode due to Tailwind text utilities. */
+.story-world-map-grok-modal-content .story-world-map-prompt-text {
+    background: rgba(24, 24, 27, 0.86);
+    color: rgba(244, 244, 245, 0.96);
+    border-color: rgba(63, 63, 70, 0.85);
+}
+
+body[data-theme="light"] .story-world-map-grok-modal-content .story-world-map-prompt-text {
+    background: rgba(255, 255, 255, 0.94);
+    color: rgba(15, 23, 42, 0.98);
+    border-color: rgba(24, 24, 27, 0.16);
+}
+
 .story-world-map-grok-modal .modal-close {
     color: #a1a1aa;
 }

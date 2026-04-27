@@ -77,9 +77,13 @@ export function renderVisualizer() {
         <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-violet-300/90">Saved map images</div>
-            <p class="mb-0 mt-2 max-w-2xl text-xs leading-relaxed text-zinc-500">Rendered files from your OpenAI-compatible image endpoint (paste prompt from above, or use the button).</p>
+            <p class="mb-0 mt-2 max-w-2xl text-xs leading-relaxed text-zinc-500">Save your finished map here after generating it elsewhere: upload the PNG/JPG you downloaded, or paste an image URL. (API renders also land here.)</p>
           </div>
-          <button type="button" class="shrink-0 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-2.5 text-xs font-extrabold text-amber-100 shadow-sm ring-1 ring-inset ring-amber-400/15 transition hover:bg-amber-400/18" onclick="App.generateStoryWorldMapAI()">Fetch map via image API</button>
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <button type="button" class="shrink-0 rounded-xl border border-zinc-600/80 bg-zinc-950/50 px-4 py-2.5 text-xs font-extrabold text-zinc-200 shadow-sm ring-1 ring-inset ring-white/[0.04] transition hover:border-zinc-500 hover:bg-zinc-900/70" onclick="App.openStoryWorldMapGalleryUpload()">Upload image</button>
+            <button type="button" class="shrink-0 rounded-xl border border-zinc-600/80 bg-zinc-950/50 px-4 py-2.5 text-xs font-extrabold text-zinc-200 shadow-sm ring-1 ring-inset ring-white/[0.04] transition hover:border-zinc-500 hover:bg-zinc-900/70" onclick="App.addStoryWorldMapGalleryByUrl()">Add image URL</button>
+            <button type="button" class="shrink-0 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-2.5 text-xs font-extrabold text-amber-100 shadow-sm ring-1 ring-inset ring-amber-400/15 transition hover:bg-amber-400/18" onclick="App.generateStoryWorldMapAI()">Fetch via image API</button>
+          </div>
         </div>
         <div id="storyWorldMapGallery" class="mt-5"></div>
       </div>
