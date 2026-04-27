@@ -32,91 +32,26 @@ export function renderDashboard() {
               <input id="importStoryFileInput" type="file" accept="application/json,.json" class="hidden" onchange="App.importStoryFromFile(this.files?.[0] || null)">
             </div>
           </div>
-
-          <div class="flex flex-wrap items-center gap-2 border-t border-zinc-800/90 pt-5">
-            <div class="mr-1 text-[11px] font-extrabold uppercase tracking-[0.16em] text-zinc-500">Filters</div>
-            <button type="button" id="chipTypeFriendly" onclick="App.toggleGlobalChip('characterType','friendly')">Friendly</button>
-            <button type="button" id="chipTypeAntagonist" onclick="App.toggleGlobalChip('characterType','antagonist')">Antagonist</button>
-            <button type="button" id="chipTypeGray" onclick="App.toggleGlobalChip('characterType','gray')">Gray</button>
-            <span class="mx-1 text-zinc-600">|</span>
-            <button type="button" id="chipBeat1" onclick="App.toggleGlobalChip('beat','1')">Beat 1</button>
-            <button type="button" id="chipBeat2" onclick="App.toggleGlobalChip('beat','2')">Beat 2</button>
-            <button type="button" id="chipBeat3" onclick="App.toggleGlobalChip('beat','3')">Beat 3</button>
-            <button type="button" id="chipBeat4" onclick="App.toggleGlobalChip('beat','4')">Beat 4</button>
-            <button type="button" id="chipBeat5" onclick="App.toggleGlobalChip('beat','5')">Beat 5</button>
-            <button type="button" id="chipBeat6" onclick="App.toggleGlobalChip('beat','6')">Beat 6</button>
-            <button type="button" id="chipBeat7" onclick="App.toggleGlobalChip('beat','7')">Beat 7</button>
-            <button type="button" id="chipBeat8" onclick="App.toggleGlobalChip('beat','8')">Beat 8</button>
-          </div>
         </div>
       </div>
 
-      <!-- Stats row -->
-      <div class="grid grid-cols-2 gap-5 lg:grid-cols-3">
-        <div class="dashboard-stat-card group rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_20px_50px_-18px_rgba(0,0,0,0.65)] ring-1 ring-inset ring-white/[0.03] transition duration-200 hover:border-violet-500/35 hover:shadow-[0_0_40px_-8px_rgba(139,92,246,0.28)]">
-          <div class="flex items-center gap-5">
-            <div class="flex h-12 w-12 items-center justify-center rounded-2xl border border-violet-400/35 bg-violet-600/20 text-lg text-violet-300 shadow-[0_0_28px_rgba(139,92,246,0.2)] transition group-hover:border-violet-400/50 group-hover:text-violet-200 group-hover:shadow-[0_0_32px_rgba(139,92,246,0.35)]">👥</div>
-            <div class="min-w-0">
-              <div id="character-count" class="text-3xl font-black tabular-nums tracking-tight text-violet-400 sm:text-4xl">0</div>
-              <div class="mt-0.5 text-[11px] font-extrabold uppercase tracking-[0.12em] text-zinc-500">Characters</div>
-            </div>
-          </div>
-        </div>
-        <div class="dashboard-stat-card group rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_20px_50px_-18px_rgba(0,0,0,0.65)] ring-1 ring-inset ring-white/[0.03] transition duration-200 hover:border-violet-500/35 hover:shadow-[0_0_40px_-8px_rgba(139,92,246,0.28)]">
-          <div class="flex items-center gap-5">
-            <div class="flex h-12 w-12 items-center justify-center rounded-2xl border border-violet-400/35 bg-violet-600/20 text-lg text-violet-300 shadow-[0_0_28px_rgba(139,92,246,0.2)] transition group-hover:border-violet-400/50 group-hover:text-violet-200 group-hover:shadow-[0_0_32px_rgba(139,92,246,0.35)]">🗓️</div>
-            <div class="min-w-0">
-              <div id="event-count" class="text-3xl font-black tabular-nums tracking-tight text-violet-400 sm:text-4xl">0</div>
-              <div class="mt-0.5 text-[11px] font-extrabold uppercase tracking-[0.12em] text-zinc-500">Timeline</div>
-            </div>
-          </div>
-        </div>
-        <div class="dashboard-stat-card group rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_20px_50px_-18px_rgba(0,0,0,0.65)] ring-1 ring-inset ring-white/[0.03] transition duration-200 hover:border-violet-500/35 hover:shadow-[0_0_40px_-8px_rgba(139,92,246,0.28)]">
-          <div class="flex items-center gap-5">
-            <div class="flex h-12 w-12 items-center justify-center rounded-2xl border border-violet-400/35 bg-violet-600/20 text-lg text-violet-300 shadow-[0_0_28px_rgba(139,92,246,0.2)] transition group-hover:border-violet-400/50 group-hover:text-violet-200 group-hover:shadow-[0_0_32px_rgba(139,92,246,0.35)]">✅</div>
-            <div class="min-w-0">
-              <div id="task-count" class="text-3xl font-black tabular-nums tracking-tight text-violet-400 sm:text-4xl">0</div>
-              <div class="mt-0.5 text-[11px] font-extrabold uppercase tracking-[0.12em] text-zinc-500">Open tasks</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Character type cards -->
-      <div class="grid grid-cols-1 gap-5 md:grid-cols-3">
-        <div class="dashboard-panel rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_20px_50px_-18px_rgba(0,0,0,0.65)] ring-1 ring-inset ring-emerald-500/15">
-          <div class="flex items-center justify-between">
-            <div class="text-sm font-black tracking-tight text-emerald-400">Friendly</div>
-            <div class="text-[11px] font-extrabold uppercase tracking-[0.12em] text-zinc-500">Cast</div>
-          </div>
-          <div id="friendly-count" class="mt-4 text-4xl font-black tabular-nums tracking-tight text-zinc-50 sm:text-5xl">0</div>
-        </div>
-        <div class="dashboard-panel rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_20px_50px_-18px_rgba(0,0,0,0.65)] ring-1 ring-inset ring-rose-500/15">
-          <div class="flex items-center justify-between">
-            <div class="text-sm font-black tracking-tight text-rose-400">Antagonist</div>
-            <div class="text-[11px] font-extrabold uppercase tracking-[0.12em] text-zinc-500">Pressure</div>
-          </div>
-          <div id="antagonist-count" class="mt-4 text-4xl font-black tabular-nums tracking-tight text-zinc-50 sm:text-5xl">0</div>
-        </div>
-        <div class="dashboard-panel rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_20px_50px_-18px_rgba(0,0,0,0.65)] ring-1 ring-inset ring-zinc-600/25">
-          <div class="flex items-center justify-between">
-            <div class="text-sm font-black tracking-tight text-zinc-300">Gray</div>
-            <div class="text-[11px] font-extrabold uppercase tracking-[0.12em] text-zinc-500">Complexity</div>
-          </div>
-          <div id="gray-count" class="mt-4 text-4xl font-black tabular-nums tracking-tight text-zinc-50 sm:text-5xl">0</div>
-        </div>
-      </div>
-
-      <!-- Momentum ring + Quick actions -->
+      <!-- Command center: Momentum (hero) + Quick actions -->
       <div class="grid grid-cols-1 items-stretch gap-6 lg:grid-cols-3">
-        <div class="dashboard-panel rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_24px_60px_-16px_rgba(0,0,0,0.72)] ring-1 ring-inset ring-white/[0.04] sm:p-8 lg:col-span-2">
-          <div class="flex flex-col items-center justify-center gap-1 py-2">
-            <div class="text-center">
-              <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-zinc-500">Story Momentum</div>
-              <div class="mt-1.5 text-sm font-medium text-zinc-400">Work items completed</div>
+        <div class="dashboard-panel rounded-[1.35rem] border border-zinc-800/90 bg-gradient-to-b from-zinc-900 via-zinc-950 to-zinc-900 p-6 shadow-[0_28px_70px_-22px_rgba(0,0,0,0.85)] ring-1 ring-inset ring-violet-500/[0.12] sm:p-8 lg:col-span-2">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div class="min-w-0">
+              <div class="text-[11px] font-extrabold uppercase tracking-[0.2em] text-violet-400/90">Command center</div>
+              <h2 class="mt-2 font-serif text-3xl font-semibold tracking-tight text-zinc-50 sm:text-4xl">Story Momentum</h2>
+              <p class="mt-3 max-w-2xl text-sm leading-relaxed text-zinc-500">Stay calm. Keep building beats. Let the tools surface what’s next.</p>
             </div>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" class="rounded-xl bg-violet-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.switchTab('timeline')">Start in Timeline</button>
+              <button type="button" class="rounded-xl border border-zinc-700/90 bg-zinc-950/40 px-5 py-3 text-sm font-extrabold text-zinc-200 shadow-md ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70 hover:text-white" onclick="App.switchTab('visualizer')">Open Visualizer</button>
+            </div>
+          </div>
 
-            <div class="relative mx-auto mt-4 flex h-72 w-72 items-center justify-center sm:h-80 sm:w-80">
+          <div class="mt-8 grid grid-cols-1 gap-8 sm:grid-cols-2 sm:items-center">
+            <div class="relative mx-auto flex h-72 w-72 items-center justify-center sm:h-80 sm:w-80">
               <svg class="dashboard-momentum-svg h-full w-full -rotate-90 drop-shadow-[0_0_48px_rgba(139,92,246,0.35)]" viewBox="0 0 120 120" aria-hidden="true">
                 <circle cx="60" cy="60" r="54" stroke="#27272a" stroke-width="12" fill="none"></circle>
                 <circle
@@ -149,6 +84,19 @@ export function renderDashboard() {
               </div>
             </div>
 
+            <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/55 p-5 ring-1 ring-inset ring-white/[0.03]">
+              <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-zinc-500">Focus</div>
+              <div class="mt-2 text-xl font-black tracking-tight text-zinc-50">One move at a time</div>
+              <div class="mt-3 grid gap-2 text-sm font-semibold text-zinc-400">
+                <div class="flex items-center justify-between gap-3"><span class="text-zinc-500">Open tasks</span><span id="task-count" class="text-zinc-100">0</span></div>
+                <div class="flex items-center justify-between gap-3"><span class="text-zinc-500">Timeline events</span><span id="event-count" class="text-zinc-100">0</span></div>
+                <div class="flex items-center justify-between gap-3"><span class="text-zinc-500">Characters</span><span id="character-count" class="text-zinc-100">0</span></div>
+              </div>
+              <div class="mt-5 border-t border-zinc-800/80 pt-5">
+                <div id="aiStatusIndicator" class="min-h-[40px] text-sm text-zinc-400"></div>
+              </div>
+            </div>
+
             <div class="hidden">
               <div id="completion-bar" style="width:0%"></div>
             </div>
@@ -156,47 +104,43 @@ export function renderDashboard() {
         </div>
 
         <div class="dashboard-panel rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_24px_60px_-16px_rgba(0,0,0,0.72)] ring-1 ring-inset ring-white/[0.04] sm:p-7">
-          <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-zinc-500">Quick actions</div>
-          <div class="mt-5 grid gap-3">
-            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-4 py-3.5 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)] active:scale-[0.99]" onclick="App.openImportNotesModal()">Import notes</button>
-            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-4 py-3.5 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)] active:scale-[0.99]" onclick="App.switchTab('templates')">Templates</button>
-            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-4 py-3.5 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)] active:scale-[0.99]" onclick="App.switchTab('characters')">New character</button>
-            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-4 py-3.5 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)] active:scale-[0.99]" onclick="App.switchTab('timeline')">New event</button>
-            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-4 py-3.5 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)] active:scale-[0.99]" onclick="App.switchTab('workitems')">New task</button>
+          <div class="flex items-center justify-between gap-4">
+            <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-zinc-500">Quick actions</div>
+            <button type="button" class="rounded-xl border border-zinc-700/90 bg-zinc-950 px-3 py-2 text-xs font-extrabold text-zinc-200 ring-1 ring-inset ring-white/[0.03] transition hover:border-violet-500/35 hover:text-white" onclick="App.switchTab('ai-queue')">AI tasks</button>
           </div>
-          <div class="mt-6 border-t border-zinc-800/90 pt-6">
-            <div id="aiStatusIndicator" class="min-h-[44px] text-sm text-zinc-400"></div>
+          <div class="mt-5 grid gap-3">
+            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-4 py-3 text-left text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)] active:scale-[0.99]" onclick="App.openImportNotesModal()">Import notes</button>
+            <button type="button" class="dashboard-qa-btn rounded-xl border border-zinc-700/90 bg-zinc-950/50 px-4 py-3 text-left text-sm font-extrabold text-zinc-100 ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.switchTab('templates')">Templates</button>
+            <button type="button" class="dashboard-qa-btn rounded-xl border border-zinc-700/90 bg-zinc-950/50 px-4 py-3 text-left text-sm font-extrabold text-zinc-100 ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.switchTab('characters')">New character</button>
+            <button type="button" class="dashboard-qa-btn rounded-xl border border-zinc-700/90 bg-zinc-950/50 px-4 py-3 text-left text-sm font-extrabold text-zinc-100 ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.switchTab('timeline')">New event</button>
+            <button type="button" class="dashboard-qa-btn rounded-xl border border-zinc-700/90 bg-zinc-950/50 px-4 py-3 text-left text-sm font-extrabold text-zinc-100 ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.openVoiceMemoModal()">🎙️ Process voice memo</button>
           </div>
         </div>
       </div>
 
-      <!-- Story Locations Overview (same data as Visualizer; updates with timeline) -->
-      <section class="dashboard-panel rounded-[1.35rem] border border-zinc-800/90 bg-gradient-to-b from-zinc-900 via-zinc-950 to-zinc-900 p-6 shadow-[0_24px_60px_-16px_rgba(0,0,0,0.72)] ring-1 ring-inset ring-violet-500/[0.12] sm:p-8">
-        <div class="flex flex-wrap items-end justify-between gap-4">
-          <div class="min-w-0">
-            <div class="text-[11px] font-extrabold uppercase tracking-[0.2em] text-violet-400/90">Story geography</div>
-            <h2 class="mt-2 font-serif text-3xl font-semibold tracking-tight text-zinc-50 sm:text-4xl">Story Locations Overview</h2>
-            <p class="mt-3 max-w-2xl text-sm leading-relaxed text-zinc-500">Where your beats live, in story order. Click a line to open the Timeline on that moment.</p>
+      <!-- Teasers: map + relationships (quick jump into focused workspaces) -->
+      <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <section class="dashboard-panel rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_24px_60px_-16px_rgba(0,0,0,0.72)] ring-1 ring-inset ring-white/[0.04] sm:p-8 lg:col-span-2">
+          <div class="flex flex-wrap items-end justify-between gap-4">
+            <div class="min-w-0">
+              <div class="text-[11px] font-extrabold uppercase tracking-[0.2em] text-violet-400/90">Realm atlas</div>
+              <h3 class="mt-2 text-2xl font-black tracking-tight text-zinc-50 sm:text-3xl">Story World Map</h3>
+              <p class="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-500">Your Ghost Border map, always one click away.</p>
+            </div>
+            <button type="button" class="dashboard-qa-btn shrink-0 rounded-xl bg-violet-600 px-6 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.switchTab('visualizer')">Open map</button>
           </div>
-        </div>
-        <div id="storyLocationsOverviewDashboard" class="story-locations-overview-root mt-8"></div>
-      </section>
+          <div id="dashboardMapPreview" class="mt-6 h-52 overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0a0a0c] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] ring-1 ring-inset ring-black/40"></div>
+        </section>
 
-      <!-- Notes import -->
-      <div class="dashboard-panel rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_24px_60px_-16px_rgba(0,0,0,0.72)] ring-1 ring-inset ring-white/[0.04] sm:p-8">
-        <div class="flex flex-col gap-3">
-          <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-zinc-500">Notes</div>
-          <div class="text-2xl font-black tracking-tight text-zinc-50 sm:text-3xl">Auto‑structure raw notes</div>
-          <div class="max-w-2xl text-sm leading-relaxed text-zinc-400">Paste messy ideas. Review extracted drafts before promoting anything to canon.</div>
-        </div>
-        <div class="mt-7">
-          <textarea id="dashboardRawNotes" class="w-full rounded-2xl border border-zinc-700/90 bg-zinc-950 p-5 text-sm font-semibold leading-relaxed text-zinc-100 shadow-inner shadow-black/40 outline-none ring-2 ring-transparent placeholder:text-zinc-600 focus:border-violet-500/50 focus:ring-violet-500/25" rows="8" placeholder="Paste your full story notes here..."></textarea>
-          <div class="mt-5 flex flex-wrap gap-3">
-            <button type="button" class="dashboard-qa-btn rounded-xl bg-violet-600 px-6 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)] active:scale-[0.99]" onclick="App.analyzeAndImportDashboardNotes()">Analyze & import</button>
-            <button type="button" class="rounded-xl border border-zinc-700/90 bg-zinc-950 px-6 py-3 text-sm font-extrabold text-zinc-300 shadow-md ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-800 hover:text-white" onclick="document.getElementById('dashboardRawNotes').value=''">Clear</button>
+        <section class="dashboard-panel rounded-[1.35rem] border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_24px_60px_-16px_rgba(0,0,0,0.72)] ring-1 ring-inset ring-white/[0.04] sm:p-8">
+          <div class="text-[11px] font-extrabold uppercase tracking-[0.2em] text-violet-400/90">Intrigue</div>
+          <div class="mt-2 text-2xl font-black tracking-tight text-zinc-50">Relationship web</div>
+          <div class="mt-2 text-sm font-semibold text-zinc-500">Teaser: <span id="dashboardRelationshipCount" class="text-zinc-200">0</span> connections tracked.</div>
+          <div class="mt-5 grid gap-2">
+            <button type="button" class="dashboard-qa-btn w-full rounded-xl bg-violet-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.switchTab('visualizer')">Open Relationship Graph</button>
+            <button type="button" class="dashboard-qa-btn w-full rounded-xl border border-zinc-700/90 bg-zinc-950/50 px-5 py-3 text-sm font-extrabold text-zinc-100 ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.switchTab('ai-queue')">Open AI tasks</button>
           </div>
-          <div id="dashboardImportStatus" class="mt-5 text-sm text-zinc-400"></div>
-        </div>
+        </section>
       </div>
 
       <!-- Mini timeline preview -->

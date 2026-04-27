@@ -27,6 +27,7 @@
             </div>
             <div class="topbar-actions">
                 <button class="rounded-xl bg-violet-600 px-4 py-2 text-sm font-extrabold text-white shadow-lg shadow-violet-950/30 hover:bg-violet-700" onclick="App.switchTab('master-document')">Open Master Document</button>
+                <button class="rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-extrabold text-white shadow-lg shadow-violet-950/30 hover:bg-violet-700" onclick="App.openStorySetupWizard()" title="Build story context with Dan Harmon’s Story Circle">Start Story Setup Wizard</button>
                 <button class="rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-sm font-extrabold text-zinc-100 hover:bg-zinc-800/70" id="themeToggleBtn" onclick="App.toggleTheme()" title="Toggle theme">Light</button>
                 <button class="rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-sm font-extrabold text-zinc-100 hover:bg-zinc-800/70" onclick="App.switchTab('ai-settings')">AI Settings</button>
             </div>
@@ -37,50 +38,27 @@
                 <div class="px-2 pb-2 text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">Navigate</div>
                 <div class="flex min-h-0 flex-1 flex-col gap-0.5">
                     <button type="button" class="tab-button active" onclick="App.switchTab('dashboard')"><span class="sidebar-nav-icon" aria-hidden="true">⌂</span><span>Dashboard</span></button>
-                    <button type="button" class="tab-button" onclick="App.switchTab('templates')"><span class="sidebar-nav-icon" aria-hidden="true">✦</span><span>Templates</span></button>
-                    <button type="button" class="tab-button" onclick="App.switchTab('characters')"><span class="sidebar-nav-icon" aria-hidden="true">◎</span><span>Characters</span></button>
                     <button type="button" class="tab-button" onclick="App.switchTab('timeline')"><span class="sidebar-nav-icon" aria-hidden="true">⟲</span><span>Timeline</span></button>
+                    <button type="button" class="tab-button" onclick="App.switchTab('characters')"><span class="sidebar-nav-icon" aria-hidden="true">◎</span><span>Characters</span></button>
                     <button type="button" class="tab-button" onclick="App.switchTab('plot')"><span class="sidebar-nav-icon" aria-hidden="true">☰</span><span>Plot</span></button>
                     <button type="button" class="tab-button" onclick="App.switchTab('politics')"><span class="sidebar-nav-icon" aria-hidden="true">⚖</span><span>Politics</span></button>
                     <button type="button" class="tab-button" onclick="App.switchTab('workitems')"><span class="sidebar-nav-icon" aria-hidden="true">✓</span><span>Work items</span></button>
+                    <button type="button" class="tab-button" onclick="App.switchTab('visualizer')"><span class="sidebar-nav-icon" aria-hidden="true">▦</span><span>Visualizer</span></button>
+                    <button type="button" class="tab-button" onclick="App.switchTab('templates')"><span class="sidebar-nav-icon" aria-hidden="true">✦</span><span>Templates</span></button>
                 </div>
             </div>
 
-            <div class="sidebar-nav sidebar-ai-section px-2">
-                <details id="sidebarAIOutputs" class="mx-1 rounded-2xl border border-zinc-800/80 bg-zinc-950/30 p-2 ring-1 ring-inset ring-white/[0.03]">
-                    <summary class="flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-2 py-2 text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-400 select-none [&::-webkit-details-marker]:hidden">
-                        <span>AI + Outputs</span>
-                        <span class="rounded-full border border-violet-500/25 bg-violet-500/10 px-2 py-1 text-[10px] font-extrabold text-violet-200/90">Toggle</span>
-                    </summary>
-
-                    <details id="aiQueueSidebarPanel" class="mt-2 rounded-2xl border border-violet-500/18 bg-zinc-950/50 p-3 shadow-[0_12px_40px_-18px_rgba(139,92,246,0.25)] ring-1 ring-inset ring-violet-500/10">
-                        <summary class="flex cursor-pointer list-none items-start justify-between gap-2 select-none [&::-webkit-details-marker]:hidden">
-                            <div class="min-w-0">
-                                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-300/90">AI Story Tasks &amp; Expansion Queue</div>
-                                <div class="mt-1 text-xs font-semibold leading-relaxed text-zinc-500">Copy to Notes → answer out loud → paste back.</div>
-                            </div>
-                            <button type="button" class="shrink-0 rounded-xl bg-violet-600 px-3 py-2 text-[11px] font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500" onclick="App.copyAllQueueQuestions()" title="Copy All Questions">⎘</button>
-                        </summary>
-                        <div class="mt-3 flex flex-col gap-2">
-                            <button type="button" class="w-full rounded-xl bg-violet-600 px-3 py-2.5 text-xs font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.copyAllQueueQuestions()">Copy All Questions</button>
-                            <button type="button" class="w-full rounded-xl border border-zinc-700/80 bg-zinc-950/60 px-3 py-2 text-xs font-extrabold text-zinc-200 ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.openVoiceMemoModal()">Process New Voice Memo</button>
-                            <button type="button" class="w-full rounded-xl border border-zinc-700/80 bg-zinc-950/60 px-3 py-2 text-xs font-extrabold text-zinc-200 ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.switchTab('ai-queue')">Open full queue</button>
-                        </div>
-                        <div id="aiQueueSidebarList" class="mt-3 space-y-2"></div>
-                    </details>
-
-                    <div class="mt-2 flex flex-col gap-0.5 pb-1">
-                        <button type="button" class="tab-button" onclick="App.switchTab('master-document')"><span class="sidebar-nav-icon" aria-hidden="true">▤</span><span>Master</span></button>
-                        <button type="button" class="tab-button" onclick="App.switchTab('visualizer')"><span class="sidebar-nav-icon" aria-hidden="true">▦</span><span>Visualizer</span></button>
-                        <button type="button" class="tab-button" onclick="App.switchTab('ai-actions')"><span class="sidebar-nav-icon" aria-hidden="true">!</span><span>Action items</span></button>
-                        <button type="button" class="tab-button" onclick="App.switchTab('ai-queue')"><span class="sidebar-nav-icon" aria-hidden="true">☑</span><span>Queue</span></button>
-                        <button type="button" class="tab-button" onclick="App.switchTab('ai-settings')"><span class="sidebar-nav-icon" aria-hidden="true">⚙</span><span>Settings</span></button>
-                    </div>
-
-                    <div class="mx-1 mb-1 rounded-xl border border-dashed border-zinc-800/80 bg-zinc-950/40 p-3 text-xs leading-relaxed text-zinc-500">
-                        Tip: start with <span class="font-semibold text-zinc-200">Timeline</span>, then prompts in <span class="font-semibold text-zinc-200">Visualizer</span>.
-                    </div>
-                </details>
+            <div class="sidebar-nav sidebar-ai-section sidebar-ai-footer px-2">
+                <div class="px-2 pb-2 text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">AI + Outputs</div>
+                <div class="flex flex-col gap-0.5 pb-2">
+                    <button type="button" class="tab-button" onclick="App.switchTab('master-document')" title="Master Document"><span class="sidebar-nav-icon" aria-hidden="true">▤</span><span>Master</span></button>
+                    <button type="button" class="tab-button" onclick="App.switchTab('visualizer')" title="Visualizer"><span class="sidebar-nav-icon" aria-hidden="true">▦</span><span>Visuals</span></button>
+                    <button type="button" class="tab-button" onclick="App.switchTab('ai-queue')" title="AI Story Tasks"><span class="sidebar-nav-icon" aria-hidden="true">☑</span><span>AI tasks</span></button>
+                    <button type="button" class="tab-button" onclick="App.switchTab('ai-settings')" title="AI Settings"><span class="sidebar-nav-icon" aria-hidden="true">⚙</span><span>Settings</span></button>
+                </div>
+                <div class="mx-1 mb-1 rounded-xl border border-dashed border-zinc-800/80 bg-zinc-950/40 p-3 text-xs leading-relaxed text-zinc-500">
+                    Start in <span class="font-semibold text-zinc-200">Timeline</span>, then use <span class="font-semibold text-zinc-200">Visualizer</span> + <span class="font-semibold text-zinc-200">AI tasks</span>.
+                </div>
             </div>
         </aside>
 

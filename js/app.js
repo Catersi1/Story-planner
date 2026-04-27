@@ -72,6 +72,24 @@ const App = {
         }
     },
 
+    // ============ STORY SETUP WIZARD (DAN HARMON STORY CIRCLE) ============
+
+    storySetupWizard: {
+        open: false,
+        running: false,
+        phase: 'intro', // intro | questions | followups | review | committed
+        baseIndex: 0,
+        baseAnswers: [], // [{ id, label, answer }]
+        followUpQuestions: [],
+        followUpAnswers: [], // [{ question, answer }]
+        followupHistory: [],
+        lastAI: { raw: '', mode: null, payload: null, questions: [] },
+        staged: { characters: [], timelineBeats: [], relationships: [], workItems: [] },
+        preview: { summary: '' },
+        editMode: false,
+        editedJson: ''
+    },
+
     /**
      * Initialize the application
      */
@@ -85,6 +103,497 @@ const App = {
         setInterval(() => {
             AIService.checkConnection().then(() => this.updateAIStatus());
         }, 5000);
+    },
+
+    openStorySetupWizard() {
+        this.storySetupWizard.open = true;
+        this.storySetupWizard.running = false;
+        this.storySetupWizard.phase = 'intro';
+        this.storySetupWizard.baseIndex = 0;
+        this.storySetupWizard.baseAnswers = [];
+        this.storySetupWizard.followUpQuestions = [];
+        this.storySetupWizard.followUpAnswers = [];
+        this.storySetupWizard.followupHistory = [];
+        this.storySetupWizard.lastAI = { raw: '', mode: null, payload: null, questions: [] };
+        this.storySetupWizard.staged = { characters: [], timelineBeats: [], relationships: [], workItems: [] };
+        this.storySetupWizard.preview = { summary: '' };
+        this.storySetupWizard.editMode = false;
+        this.storySetupWizard.editedJson = '';
+
+        document.getElementById('storySetupWizardModal')?.classList.add('active');
+        this.renderStorySetupWizardModal();
+        setTimeout(() => document.getElementById('storySetupWizardAnswer')?.focus(), 0);
+    },
+
+    closeStorySetupWizard() {
+        this.storySetupWizard.open = false;
+        this.storySetupWizard.running = false;
+        document.getElementById('storySetupWizardModal')?.classList.remove('active');
+    },
+
+    skipStorySetupWizard() {
+        this.closeStorySetupWizard();
+    },
+
+    storyCircleQuestions() {
+        return [
+            { id: '1_you', label: '1) You — Who is your protagonist (and what do they want right now)?' },
+            { id: '2_need', label: '2) Need — What do they need (deeply) that they don’t yet understand?' },
+            { id: '3_go', label: '3) Go — What do they enter / commit to (new world, mission, court, war)?' },
+            { id: '4_search', label: '4) Search — What trials force them to adapt (politics, logistics, danger)?' },
+            { id: '5_find', label: '5) Find — What do they get (a win, ally, tool, truth) and what does it cost?' },
+            { id: '6_take', label: '6) Take — What do they pay / sacrifice / lose to move forward?' },
+            { id: '7_return', label: '7) Return — How do they return to the old world / new normal?' },
+            { id: '8_change', label: '8) Change — How are they transformed (beliefs, tactics, relationships)?' }
+        ];
+    },
+
+    wizardAllAnswers() {
+        const base = this.storySetupWizard.baseAnswers.map(a => ({ questionId: a.id, question: a.label, answer: a.answer }));
+        const follow = this.storySetupWizard.followUpAnswers.map(a => ({ questionId: 'followup', question: a.question, answer: a.answer }));
+        return [...base, ...follow].filter(x => String(x.answer || '').trim());
+    },
+
+    async submitStorySetupWizardAnswer() {
+        if (this.storySetupWizard.running) return;
+        const input = document.getElementById('storySetupWizardAnswer');
+        const text = String(input?.value || '').trim();
+        if (!text) return;
+
+        // Clear input early for "chatty" feel.
+        if (input) input.value = '';
+
+        const qs = this.storyCircleQuestions();
+        const phase = this.storySetupWizard.phase;
+
+        if (phase === 'intro') {
+            this.storySetupWizard.phase = 'questions';
+        }
+
+        if (this.storySetupWizard.phase === 'questions') {
+            const idx = this.storySetupWizard.baseIndex;
+            const q = qs[idx];
+            if (q) {
+                this.storySetupWizard.baseAnswers.push({ id: q.id, label: q.label, answer: text });
+                this.storySetupWizard.baseIndex = Math.min(qs.length, idx + 1);
+            }
+            // Adaptive: run AI after every answer.
+            await this.runStorySetupWizardAI();
+            return;
+        }
+
+        if (this.storySetupWizard.phase === 'followups') {
+            const q = this.storySetupWizard.followUpQuestions[0];
+            if (q) {
+                this.storySetupWizard.followUpAnswers.push({ question: q, answer: text });
+                this.storySetupWizard.followUpQuestions = this.storySetupWizard.followUpQuestions.slice(1);
+            }
+            // After a follow-up answer, run AI again (either next follow-up, or READY).
+            await this.runStorySetupWizardAI();
+            return;
+        }
+    },
+
+    async runStorySetupWizardAI() {
+        this.storySetupWizard.running = true;
+        this.renderStorySetupWizardModal();
+        try {
+            const answers = this.wizardAllAnswers();
+            const result = await AIService.runStorySetupWizardTurn(this.storyData, answers, {
+                followupHistory: this.storySetupWizard.followupHistory
+            });
+
+            this.storySetupWizard.lastAI = {
+                raw: String(result?.raw || ''),
+                mode: result?.mode || null,
+                payload: result?.payload || null,
+                questions: Array.isArray(result?.questions) ? result.questions : []
+            };
+
+            if (result?.mode === 'ready' && result?.payload) {
+                this.stageWizardPopulation(result.payload);
+                this.storySetupWizard.phase = 'review';
+            } else {
+                const qs = Array.isArray(result?.questions) ? result.questions : [];
+                const cleaned = qs.map(q => String(q || '').trim()).filter(Boolean).slice(0, 1);
+                this.storySetupWizard.followUpQuestions = cleaned.length ? cleaned : ['What is the single most important realism constraint to obey?'];
+                this.storySetupWizard.followupHistory.push(...this.storySetupWizard.followUpQuestions);
+                this.storySetupWizard.phase = 'followups';
+            }
+        } catch (e) {
+            this.storySetupWizard.lastAI = { raw: `Error: ${e?.message || e}`, mode: 'error', payload: null, questions: [] };
+            this.storySetupWizard.followUpQuestions = ['AI error. Paste a short summary of your premise and main conflict (1–2 paragraphs).'];
+            this.storySetupWizard.phase = 'followups';
+        } finally {
+            this.storySetupWizard.running = false;
+            this.renderStorySetupWizardModal();
+            setTimeout(() => document.getElementById('storySetupWizardAnswer')?.focus(), 0);
+        }
+    },
+
+    normalizeWizardLocation(loc) {
+        const raw = String(loc || '').trim();
+        if (!raw) return 'Daming Palace';
+        const low = raw.toLowerCase();
+        const aliases = this.GHOST_BORDER_LOCATION_ALIASES || {};
+        const viaAlias = aliases[low];
+        if (viaAlias) return viaAlias;
+        const known = Object.keys(this.GHOST_BORDER_LOCATION_COORDS || {});
+        const direct = known.find(k => k.toLowerCase() === low);
+        if (direct) return direct;
+        const fuzzy = known.find(k => low.includes(k.toLowerCase()) || k.toLowerCase().includes(low));
+        return fuzzy || raw;
+    },
+
+    stageWizardPopulation(payload) {
+        const p = payload || {};
+        const chars = Array.isArray(p.characters) ? p.characters : [];
+        const beats = Array.isArray(p.timelineBeats) ? p.timelineBeats : [];
+        const rels = Array.isArray(p.relationships) ? p.relationships : [];
+        const items = Array.isArray(p.workItems) ? p.workItems : [];
+
+        this.storySetupWizard.staged = {
+            characters: chars.map(c => ({
+                name: String(c?.name || '').trim(),
+                type: String(c?.type || 'gray').trim().toLowerCase(),
+                description: String(c?.description || '').trim(),
+                isCanon: Boolean(c?.isCanon)
+            })).filter(c => c.name),
+            timelineBeats: beats.map((b, idx) => ({
+                title: String(b?.title || '').trim() || `Beat ${idx + 1}`,
+                order: Number.isFinite(Number(b?.order)) ? Number(b.order) : idx,
+                beat: String(b?.beat || '').trim() || String(((idx % 8) + 1)),
+                description: String(b?.description || '').trim(),
+                location: this.normalizeWizardLocation(b?.location || ''),
+                isCanon: Boolean(b?.isCanon)
+            })),
+            relationships: rels.map(r => ({
+                fromName: String(r?.fromName || '').trim(),
+                toName: String(r?.toName || '').trim(),
+                type: String(r?.type || 'other').trim().toLowerCase(),
+                label: String(r?.label || '').trim(),
+                strength: Math.max(1, Math.min(5, Number(r?.strength) || 2)),
+                secret: Boolean(r?.secret),
+                description: String(r?.description || '').trim()
+            })).filter(r => r.fromName && r.toName),
+            workItems: items.map(w => ({
+                title: String(w?.title || '').trim(),
+                category: String(w?.category || 'Story').trim(),
+                completed: Boolean(w?.completed),
+                isCanon: Boolean(w?.isCanon)
+            })).filter(w => w.title)
+        };
+    },
+
+    commitStorySetupWizard() {
+        const staged = this.storySetupWizard.staged || {};
+        const existingChars = Array.isArray(this.storyData.characters) ? this.storyData.characters : [];
+        const existingNames = new Set(existingChars.map(c => String(c?.name || '').trim().toLowerCase()).filter(Boolean));
+
+        const now = Date.now();
+        const newChars = [];
+        staged.characters.forEach((c, idx) => {
+            const key = String(c.name || '').trim().toLowerCase();
+            if (!key || existingNames.has(key)) return;
+            existingNames.add(key);
+            newChars.push({
+                id: now + idx + Math.floor(Math.random() * 10000),
+                name: c.name,
+                type: ['friendly', 'antagonist', 'gray'].includes(c.type) ? c.type : 'gray',
+                description: c.description,
+                isCanon: Boolean(c.isCanon),
+                relatedCharacters: [],
+                notes: ''
+            });
+        });
+
+        const charByName = new Map([...existingChars, ...newChars].map(c => [String(c.name || '').trim().toLowerCase(), c]));
+
+        const newEvents = [];
+        const baseOrder = (Array.isArray(this.storyData.events) ? this.storyData.events : []).length;
+        staged.timelineBeats.forEach((b, idx) => {
+            newEvents.push({
+                id: now + 50000 + idx + Math.floor(Math.random() * 10000),
+                title: b.title,
+                period: 'Story Circle',
+                order: baseOrder + idx,
+                beat: String(b.beat || ((idx % 8) + 1)),
+                description: b.description,
+                location: b.location,
+                fullDescription: '',
+                involvedCharacterIds: [],
+                isCanon: Boolean(b.isCanon),
+                tags: ['setup']
+            });
+        });
+
+        const newWork = [];
+        const baseWid = now + 90000;
+        staged.workItems.forEach((w, idx) => {
+            newWork.push({
+                id: baseWid + idx + Math.floor(Math.random() * 10000),
+                title: w.title,
+                category: w.category,
+                completed: Boolean(w.completed),
+                isCanon: Boolean(w.isCanon),
+                tags: []
+            });
+        });
+
+        this.ensureRelationshipStore?.();
+        const relArr = Array.isArray(this.storyData.relationships) ? this.storyData.relationships : [];
+        const newRels = [];
+        staged.relationships.forEach((r, idx) => {
+            const a = charByName.get(String(r.fromName).toLowerCase());
+            const b = charByName.get(String(r.toName).toLowerCase());
+            if (!a || !b) return;
+            newRels.push({
+                id: now + 130000 + idx + Math.floor(Math.random() * 10000),
+                fromId: a.id,
+                toId: b.id,
+                type: r.type || 'other',
+                label: r.label || '',
+                strength: r.strength,
+                secret: r.secret,
+                description: r.description || ''
+            });
+        });
+
+        this.storyData.characters = [...existingChars, ...newChars];
+        this.storyData.events = [...(this.storyData.events || []), ...newEvents];
+        this.storyData.workItems = [...(this.storyData.workItems || []), ...newWork];
+        this.storyData.relationships = [...relArr, ...newRels];
+
+        StorageService.saveStoryData(this.storyData);
+        this.storySetupWizard.phase = 'committed';
+        this.render();
+        this.generateOrUpdateMasterScript?.();
+        this.renderStorySetupWizardModal();
+    },
+
+    storySetupWizardBack() {
+        const st = this.storySetupWizard;
+        if (st.running) return;
+        if (st.phase === 'followups') {
+            // Back from followup returns to the last base question (does not delete answers).
+            st.phase = 'questions';
+            this.renderStorySetupWizardModal();
+            setTimeout(() => document.getElementById('storySetupWizardAnswer')?.focus(), 0);
+            return;
+        }
+        if (st.phase !== 'questions') return;
+        if (st.baseIndex <= 0) {
+            st.phase = 'intro';
+            this.renderStorySetupWizardModal();
+            return;
+        }
+        // Step back and allow rewriting the previous answer.
+        st.baseIndex = Math.max(0, st.baseIndex - 1);
+        const prev = st.baseAnswers.pop();
+        const input = document.getElementById('storySetupWizardAnswer');
+        if (input && prev?.answer) input.value = String(prev.answer);
+        this.renderStorySetupWizardModal();
+        setTimeout(() => document.getElementById('storySetupWizardAnswer')?.focus(), 0);
+    },
+
+    async storySetupWizardSkipToEnd() {
+        const st = this.storySetupWizard;
+        if (st.running) return;
+        // Treat as "we're done with base questions" and let AI decide follow-up or READY.
+        st.baseIndex = 8;
+        await this.runStorySetupWizardAI();
+    },
+
+    storySetupWizardStartEditing() {
+        const st = this.storySetupWizard;
+        st.editMode = true;
+        st.editedJson = JSON.stringify(st.staged || {}, null, 2);
+        this.renderStorySetupWizardModal();
+        setTimeout(() => document.getElementById('storySetupWizardEditJson')?.focus(), 0);
+    },
+
+    storySetupWizardApplyEditedJson() {
+        const st = this.storySetupWizard;
+        const raw = String(st.editedJson || '').trim();
+        if (!raw) return;
+        try {
+            const parsed = JSON.parse(raw);
+            // Allow either {characters,...} or full payload with those keys.
+            this.stageWizardPopulation(parsed);
+            st.editMode = false;
+            this.renderStorySetupWizardModal();
+        } catch (e) {
+            const err = document.getElementById('storySetupWizardEditError');
+            if (err) err.textContent = `Invalid JSON: ${e?.message || e}`;
+        }
+    },
+
+    storySetupWizardOnEditJson(val) {
+        this.storySetupWizard.editedJson = String(val || '');
+        const err = document.getElementById('storySetupWizardEditError');
+        if (err) err.textContent = '';
+    },
+
+    renderStorySetupWizardModal() {
+        const root = document.getElementById('storySetupWizardBody');
+        if (!root) return;
+
+        const qs = this.storyCircleQuestions();
+        const st = this.storySetupWizard;
+        const phase = st.phase;
+
+        // Ensure modal exists if opened before modals were created (rare, but safe).
+        if (st.open && !document.getElementById('storySetupWizardModal')) {
+            // no-op; modal is created at startup
+        }
+
+        const progress = Math.min(8, st.baseIndex);
+        const pct = Math.round((progress / 8) * 100);
+
+        const answerList = (arr) => arr.map((a) => `
+            <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/55 p-4">
+                <div class="text-xs font-extrabold uppercase tracking-[0.14em] text-zinc-500">${this.escapeHTML(a.label || a.question || '')}</div>
+                <div class="mt-2 text-sm font-semibold leading-relaxed text-zinc-200">${this.escapeHTML(a.answer || '')}</div>
+            </div>
+        `).join('');
+
+        const intro = `
+            <div class="space-y-6">
+                <div class="rounded-2xl border border-violet-500/20 bg-gradient-to-b from-zinc-950 via-zinc-950 to-violet-950/20 p-6 ring-1 ring-inset ring-violet-500/10">
+                    <div class="text-[11px] font-extrabold uppercase tracking-[0.2em] text-violet-300/95">Wizard</div>
+                    <div class="mt-2 font-serif text-3xl font-semibold tracking-tight text-zinc-50">Build Your Story Context</div>
+                    <div class="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-400">We’ll walk the 8 beats of Dan Harmon’s Story Circle. After that, your local LLM asks only the minimum follow-ups needed—then it populates characters, beats, relationships, and work items for you to review.</div>
+                </div>
+                <button type="button" class="w-full rounded-2xl bg-violet-600 px-6 py-4 text-base font-extrabold text-white shadow-[0_18px_60px_-14px_rgba(91,33,182,0.85)] ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.storySetupWizard.phase='questions'; App.renderStorySetupWizardModal(); setTimeout(()=>document.getElementById('storySetupWizardAnswer')?.focus(),0);">Begin</button>
+            </div>
+        `;
+
+        const currentQ = qs[Math.min(qs.length - 1, st.baseIndex)]?.label || 'Story Circle';
+        const followQ = st.followUpQuestions?.[0] || 'Follow-up';
+
+        const questionPanel = `
+            <div class="space-y-6">
+                <div class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-5">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-zinc-500">Step ${Math.max(1, Math.min(8, progress || 1))} of 8 – Dan Harmon Story Circle</div>
+                            <div class="mt-2 text-lg font-black tracking-tight text-zinc-50">${phase === 'followups' ? 'Follow-up (only if needed)' : 'Canon foundation'}</div>
+                        </div>
+                        <button type="button" class="rounded-xl border border-zinc-700/90 bg-zinc-950/50 px-4 py-2 text-xs font-extrabold text-zinc-200 ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.storySetupWizardSkipToEnd()">Skip to end</button>
+                    </div>
+                    <div class="mt-4 h-2 w-full overflow-hidden rounded-full border border-zinc-800 bg-zinc-950/70">
+                        <div class="h-full bg-gradient-to-r from-violet-600 to-fuchsia-500" style="width:${pct}%"></div>
+                    </div>
+                </div>
+
+                <div class="rounded-2xl border border-zinc-800/90 bg-zinc-950/55 p-6">
+                    <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-300/90">${phase === 'followups' ? 'Follow-up' : 'Story Circle'}</div>
+                    <div class="mt-2 text-2xl font-black tracking-tight text-zinc-50">${this.escapeHTML(phase === 'followups' ? followQ : currentQ)}</div>
+                    <div class="mt-4">
+                        <textarea id="storySetupWizardAnswer" rows="6" class="w-full rounded-2xl border border-zinc-700/90 bg-zinc-950 p-5 text-sm font-semibold leading-relaxed text-zinc-100 shadow-inner shadow-black/40 outline-none ring-2 ring-transparent placeholder:text-zinc-600 focus:border-violet-500/50 focus:ring-violet-500/25" placeholder="Type your answer…"></textarea>
+                        <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                <button type="button" class="rounded-xl border border-zinc-700/90 bg-zinc-950/40 px-6 py-3 text-sm font-extrabold text-zinc-200 shadow-md ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.storySetupWizardBack()">Back</button>
+                                <button type="button" class="rounded-xl bg-violet-600 px-6 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99] disabled:opacity-60" ${st.running ? 'disabled' : ''} onclick="App.submitStorySetupWizardAnswer()">${st.running ? 'Thinking…' : (phase === 'followups' ? 'Submit follow-up' : 'Next')}</button>
+                            </div>
+                            <button type="button" class="topbar-ghost" onclick="App.skipStorySetupWizard()">Close</button>
+                        </div>
+                        ${st.lastAI?.raw && st.lastAI.mode === 'error' ? `<div class="mt-4 rounded-2xl border border-rose-500/25 bg-rose-500/10 p-4 text-sm font-semibold text-rose-100">${this.escapeHTML(st.lastAI.raw)}</div>` : ''}
+                    </div>
+                </div>
+
+                ${st.baseAnswers.length ? `
+                    <details class="rounded-2xl border border-zinc-800/80 bg-zinc-950/40 p-5">
+                        <summary class="cursor-pointer list-none text-sm font-extrabold text-zinc-200 select-none [&::-webkit-details-marker]:hidden">Show answers so far</summary>
+                        <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                            ${answerList(st.baseAnswers)}
+                        </div>
+                    </details>
+                ` : ''}
+            </div>
+        `;
+
+        const review = (() => {
+            const s = st.staged || {};
+            const c = Array.isArray(s.characters) ? s.characters : [];
+            const b = Array.isArray(s.timelineBeats) ? s.timelineBeats : [];
+            const r = Array.isArray(s.relationships) ? s.relationships : [];
+            const w = Array.isArray(s.workItems) ? s.workItems : [];
+
+            const list = (title, arr, pick) => `
+                <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/45 p-5">
+                    <div class="flex items-baseline justify-between gap-3">
+                        <div class="text-sm font-black text-zinc-100">${title}</div>
+                        <div class="text-xs font-extrabold uppercase tracking-[0.14em] text-zinc-500">${arr.length}</div>
+                    </div>
+                    <div class="mt-3 space-y-2 text-sm font-semibold text-zinc-300">
+                        ${arr.slice(0, 6).map(x => `<div class="truncate">• ${this.escapeHTML(pick(x))}</div>`).join('') || `<div class="text-zinc-500">None</div>`}
+                    </div>
+                </div>
+            `;
+
+            return `
+                <div class="space-y-6">
+                    <div class="rounded-2xl border border-violet-500/20 bg-gradient-to-b from-zinc-950 via-zinc-950 to-violet-950/20 p-6 ring-1 ring-inset ring-violet-500/10">
+                        <div class="text-[11px] font-extrabold uppercase tracking-[0.2em] text-violet-300/95">READY_TO_POPULATE</div>
+                        <div class="mt-2 text-2xl font-black tracking-tight text-zinc-50">Review before committing</div>
+                        <div class="mt-2 text-sm font-semibold leading-relaxed text-zinc-400">These items will be added to your project. You can edit everything afterward.</div>
+                    </div>
+
+                    ${st.editMode ? `
+                        <div class="rounded-2xl border border-zinc-800/80 bg-zinc-950/55 p-5">
+                            <div class="text-sm font-black text-zinc-100">Edit Before Applying</div>
+                            <div class="mt-2 text-xs font-semibold text-zinc-500">Edit the staged JSON, then apply to re-stage (still not committed until “Apply to Story”).</div>
+                            <textarea id="storySetupWizardEditJson" class="mt-4 w-full resize-y rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 font-mono text-xs leading-relaxed text-zinc-100 shadow-inner shadow-black/30 outline-none" rows="18" spellcheck="false" oninput="App.storySetupWizardOnEditJson(this.value)">${this.escapeHTML(String(st.editedJson || ''))}</textarea>
+                            <div id="storySetupWizardEditError" class="mt-3 text-sm font-semibold text-rose-200"></div>
+                            <div class="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <button type="button" class="rounded-xl bg-violet-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500" onclick="App.storySetupWizardApplyEditedJson()">Apply edited JSON (stage)</button>
+                                <button type="button" class="topbar-ghost" onclick="App.storySetupWizard.editMode=false; App.renderStorySetupWizardModal();">Cancel edit</button>
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        ${list('Characters', c, x => x.name)}
+                        ${list('Timeline beats', b, x => `${x.title} — ${x.location}`)}
+                        ${list('Relationships', r, x => `${x.fromName} → ${x.toName} (${x.type})`)}
+                        ${list('Work items', w, x => x.title)}
+                    </div>
+
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <button type="button" class="rounded-2xl bg-violet-600 px-6 py-4 text-base font-extrabold text-white shadow-[0_18px_60px_-14px_rgba(91,33,182,0.85)] ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 active:scale-[0.99]" onclick="App.commitStorySetupWizard()">Apply to Story</button>
+                            <button type="button" class="rounded-2xl border border-zinc-700/90 bg-zinc-950/40 px-6 py-4 text-base font-extrabold text-zinc-100 shadow-md ring-1 ring-inset ring-white/[0.03] transition hover:border-zinc-600 hover:bg-zinc-900/70" onclick="App.storySetupWizardStartEditing()">Edit Before Applying</button>
+                        </div>
+                        <button type="button" class="topbar-ghost" onclick="App.skipStorySetupWizard()">Close</button>
+                    </div>
+
+                    <details class="rounded-2xl border border-zinc-800/80 bg-zinc-950/40 p-5">
+                        <summary class="cursor-pointer list-none text-sm font-extrabold text-zinc-200 select-none [&::-webkit-details-marker]:hidden">Show raw AI output</summary>
+                        <pre class="mt-4 whitespace-pre-wrap rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-xs text-zinc-300">${this.escapeHTML(String(st.lastAI?.raw || ''))}</pre>
+                    </details>
+                </div>
+            `;
+        })();
+
+        const committed = `
+            <div class="space-y-6">
+                <div class="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-6 ring-1 ring-inset ring-emerald-500/10">
+                    <div class="text-[11px] font-extrabold uppercase tracking-[0.2em] text-emerald-200/95">Saved</div>
+                    <div class="mt-2 text-2xl font-black tracking-tight text-zinc-50">Story context populated</div>
+                    <div class="mt-2 text-sm font-semibold leading-relaxed text-zinc-300">Next: go to <strong class="text-white">Timeline</strong> to refine beats, then <strong class="text-white">Visualizer</strong> to map &amp; relationships.</div>
+                </div>
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <button type="button" class="rounded-xl bg-violet-600 px-6 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500" onclick="App.switchTab('timeline'); App.closeStorySetupWizard();">Open Timeline</button>
+                    <button type="button" class="topbar-ghost" onclick="App.closeStorySetupWizard()">Close</button>
+                </div>
+            </div>
+        `;
+
+        if (phase === 'intro') root.innerHTML = intro;
+        else if (phase === 'review') root.innerHTML = review;
+        else if (phase === 'committed') root.innerHTML = committed;
+        else root.innerHTML = questionPanel;
     },
 
     // ============ MOBILE QUICK ADD ============
@@ -3041,11 +3550,16 @@ const App = {
         const antagonist = characters.filter(c => c.type === 'antagonist').length;
         const gray = characters.filter(c => c.type === 'gray').length;
 
-        document.getElementById('character-count').textContent = characters.length;
-        document.getElementById('event-count').textContent = this.storyData.events.length;
-        document.getElementById('friendly-count').textContent = friendly;
-        document.getElementById('antagonist-count').textContent = antagonist;
-        document.getElementById('gray-count').textContent = gray;
+        const cc = document.getElementById('character-count');
+        if (cc) cc.textContent = String(characters.length);
+        const ec = document.getElementById('event-count');
+        if (ec) ec.textContent = String(this.storyData.events.length);
+        const fc = document.getElementById('friendly-count');
+        if (fc) fc.textContent = String(friendly);
+        const ac = document.getElementById('antagonist-count');
+        if (ac) ac.textContent = String(antagonist);
+        const gc = document.getElementById('gray-count');
+        if (gc) gc.textContent = String(gray);
 
         const totalTasks = this.storyData.workItems.length;
         const completedTasks = this.storyData.workItems.filter(w => w.completed).length;
@@ -3067,7 +3581,42 @@ const App = {
             ring.setAttribute('stroke-dashoffset', String(offset));
         }
 
+        const relCount = document.getElementById('dashboardRelationshipCount');
+        if (relCount) {
+            const rels = Array.isArray(this.storyData.relationships) ? this.storyData.relationships : [];
+            relCount.textContent = String(rels.length);
+        }
+
+        this.renderDashboardMapPreview();
         this.renderStoryLocationsOverview();
+    },
+
+    renderDashboardMapPreview() {
+        const wrap = document.getElementById('dashboardMapPreview');
+        if (!wrap) return;
+        this.ensureStoryWorldMapGallery?.();
+
+        const gallery = this.storyData.storyWorldMapGallery || {};
+        const active = String(gallery.activeImageUrl || '').trim();
+        const fallback = String(gallery.items?.[0]?.imageUrl || '').trim();
+        const url = active || fallback;
+
+        if (!url) {
+            wrap.style.backgroundImage = '';
+            wrap.innerHTML = `
+                <div class="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+                    <div class="text-sm font-black text-zinc-100">No map image saved yet</div>
+                    <div class="text-xs font-semibold text-zinc-500">Open Visualizer → “Upload image” or “Fetch via image API”.</div>
+                </div>
+            `;
+            return;
+        }
+
+        wrap.innerHTML = '';
+        wrap.style.backgroundImage = `linear-gradient(to top, rgba(9,9,11,0.85), rgba(9,9,11,0.15)), url("${url}")`;
+        wrap.style.backgroundSize = 'cover';
+        wrap.style.backgroundPosition = 'center';
+        wrap.style.backgroundRepeat = 'no-repeat';
     },
 
     /**
@@ -7779,7 +8328,27 @@ function createVoiceMemoModal() {
     document.getElementById('modalsContainer').innerHTML += html;
 }
 
+function createStorySetupWizardModal() {
+    const html = `
+        <div id="storySetupWizardModal" class="ai-settings-modal" onclick="if(event.target && event.target.id==='storySetupWizardModal'){ App.closeStorySetupWizard(); }">
+            <div class="ai-settings-content h-[100vh] w-[100vw] max-h-none overflow-y-auto rounded-none border-0 bg-zinc-950 p-8 shadow-[0_32px_80px_-20px_rgba(0,0,0,0.85)] ring-0 sm:p-10">
+                <span class="modal-close text-zinc-500 hover:text-zinc-200" onclick="App.closeStorySetupWizard()">&times;</span>
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">Story Setup Wizard</div>
+                <h2 class="mt-2 text-3xl font-black tracking-tight text-zinc-50">Dan Harmon Story Circle</h2>
+                <p class="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-400">A calm, adaptive conversation with your local LLM. It asks follow-ups only when needed, then stages characters, beats, relationships, and work items for your review.</p>
+                <div id="storySetupWizardBody" class="mt-6"></div>
+                <div class="mt-6 flex items-center justify-between gap-3 border-t border-zinc-800/80 pt-6">
+                    <button type="button" class="topbar-ghost" onclick="App.skipStorySetupWizard()">Skip Wizard</button>
+                    <button type="button" class="topbar-ghost" onclick="App.closeStorySetupWizard()">Close</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
 createVoiceMemoModal();
+createStorySetupWizardModal();
 
 // Start the application
 App.init();

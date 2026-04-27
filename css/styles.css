@@ -324,13 +324,22 @@ body:not([data-theme="light"]) .topbar {
     font-size: 1rem;
 }
 
-/* Queue sidebar panel: collapsed by default */
-#aiQueueSidebarPanel {
-    margin-top: 0.35rem;
+/* AI footer: calmer, more compact than main nav */
+.sidebar-ai-footer {
+    padding-top: 0.85rem;
+    padding-bottom: 0.85rem;
 }
 
-#aiQueueSidebarPanel:not([open]) #aiQueueSidebarList {
-    display: none;
+.sidebar-ai-footer .tab-button {
+    padding: 0.44rem 0.7rem 0.44rem 0.55rem;
+    font-size: 0.84rem;
+    font-weight: 750;
+}
+
+.sidebar-ai-footer .sidebar-nav-icon {
+    width: 1.95rem;
+    height: 1.95rem;
+    opacity: 0.95;
 }
 
 .sidebar .sidebar-nav .tab-button:hover {

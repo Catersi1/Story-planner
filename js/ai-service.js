@@ -151,6 +151,94 @@ export const AIService = {
     },
 
     /**
+     * Story Setup Wizard (Dan Harmon Story Circle) — adaptive follow-ups.
+     * Returns either:
+     * - { mode: 'followups', questions: string[], raw }
+     * - { mode: 'ready', payload: { characters, timelineBeats, relationships, workItems }, raw }
+     */
+    async runStorySetupWizardTurn(storyData, answers = [], options = {}) {
+        const list = Array.isArray(answers) ? answers : [];
+        const history = Array.isArray(options?.followupHistory) ? options.followupHistory : [];
+
+        const allowedLocations = (() => {
+            // Prefer presets from storage layer, but keep this function decoupled.
+            const presets = Array.isArray(storyData?.locationPresets) ? storyData.locationPresets : null;
+            if (presets && presets.length) return presets;
+            return [
+                'Time Portal',
+                'Disgraced Manor',
+                'Forbidden Garden',
+                'Imperial Market',
+                'Grey Dragon Road',
+                'Daming Palace',
+                'Secret Metropolis'
+            ];
+        })();
+
+        const systemPrompt = `
+You are helping a military veteran author build a realistic time-travel C-drama.
+
+We are using Dan Harmon’s Story Circle to set up the story.
+
+Current answers so far:
+${JSON.stringify(list, null, 2)}
+
+Existing story data (may be partially filled; respect canon protections):
+${JSON.stringify(storyData || {}, null, 2)}
+
+Follow-up history (avoid repeats):
+${JSON.stringify(history || [], null, 2)}
+
+Ask 1 smart, focused follow-up question only if you genuinely need more context on critical elements (Feng’s military mindset as a 38-year-old veteran, time-travel rules, character motivations, relationships, Tang Dynasty realism, show-don’t-tell opportunities, or potential plot holes).
+
+If you have enough information, say exactly: 'READY_TO_POPULATE' and then output JSON ONLY (no markdown) with this schema:
+{
+  "characters": [{ "name": "string", "type": "friendly|antagonist|gray", "description": "string", "isCanon": true }],
+  "timelineBeats": [{ "title": "string", "order": 0, "beat": "1-8", "description": "short visual description", "location": "one of allowedLocations", "isCanon": true }],
+  "relationships": [{ "fromName": "string", "toName": "string", "type": "alliance|rivalry|romance|bloodline|mentor|secret|military|other", "label": "string", "strength": 1, "secret": false, "description": "string" }],
+  "workItems": [{ "title": "string", "category": "string", "completed": false, "isCanon": false }]
+}
+
+allowedLocations:
+${JSON.stringify(allowedLocations)}
+
+Be concise, focused, and helpful. Prioritize realism and the user’s canon (Feng is late 30s military veteran, etc.).
+
+If you need more information, output ONLY JSON with schema:
+{ "followUpQuestions": ["one question"] }
+
+Do not output anything else.
+        `.trim();
+
+        const raw = await this.callAI(systemPrompt, 1200);
+
+        const text = String(raw || '').trim();
+        const marker = 'READY_TO_POPULATE';
+
+        // READY: attempt parse JSON after marker, else fallback to parse whole.
+        if (text.includes(marker)) {
+            const after = text.split(marker).slice(1).join(marker).trim();
+            const maybeJson = after.startsWith('{') ? after : after.slice(after.indexOf('{'));
+            try {
+                const parsed = JSON.parse(maybeJson);
+                return { mode: 'ready', payload: parsed, raw: text };
+            } catch (e) {
+                // fall through to generic parse attempt
+            }
+        }
+
+        try {
+            const parsed = JSON.parse(text);
+            const qs = Array.isArray(parsed?.followUpQuestions) ? parsed.followUpQuestions : [];
+            return { mode: 'followups', questions: qs.map(q => String(q || '').trim()).filter(Boolean).slice(0, 1), raw: text };
+        } catch (e) {
+            // Last resort: treat as a single follow-up question.
+            const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
+            return { mode: 'followups', questions: lines.slice(0, 1), raw: text };
+        }
+    },
+
+    /**
      * Get first available model or custom selected
      */
     getActiveModel() {
