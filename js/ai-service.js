@@ -3,7 +3,9 @@
  * Handles all AI integration with LM Studio and Ollama
  */
 
-const AIService = {
+import { StorageService } from './storage.js';
+
+export const AIService = {
     settings: StorageService.loadAISettings(),
     connected: false,
     availableModels: [],
@@ -300,7 +302,7 @@ const AIService = {
                 id: c.id, name: c.name, type: c.type, role: c.role, background: c.background
             })),
             timelineEvents: (storyData?.events || []).filter(e => e && e.isCanon).map(e => ({
-                id: e.id, title: e.title, beat: e.beat, period: e.period, description: e.description
+                id: e.id, title: e.title, beat: e.beat, period: e.period, location: e.location || '', description: e.description
             })),
             workItems: (storyData?.workItems || []).filter(w => w && w.isCanon).map(w => ({
                 id: w.id, title: w.title, category: w.category
@@ -316,13 +318,177 @@ ${JSON.stringify(canon, null, 2)}`;
     },
 
     /**
+     * Heuristic: portal ↔ metropolis / palace era-shift (matches interactive map dashed jumps).
+     */
+    ghostBorderStoryJumpForPrompt(prevEv, nextEv) {
+        const A = String(prevEv?.location || '').toLowerCase();
+        const B = String(nextEv?.location || '').toLowerCase();
+        return (A.includes('portal') && (B.includes('modern') || B.includes('metropolis') || B.includes('secret')))
+            || ((A.includes('modern') || A.includes('metropolis') || A.includes('secret'))
+                && (B.includes('palace') || B.includes('daming') || B.includes('tang')));
+    },
+
+    /**
+     * Rich top-down realm-map image prompt for Grok Imagine (timeline beats **with locations only**, story order).
+     * @param {object} storyData
+     * @returns {string}
+     */
+    buildStoryWorldMapGrokPrompt(storyData) {
+        const beatLabels = {
+            '1': 'You — establish protagonist',
+            '2': 'Need — something is not right',
+            '3': 'Go! — crossing the threshold',
+            '4': 'Search — road of trials',
+            '5': 'Find — meeting the goddess',
+            '6': 'Take — paying the price',
+            '7': 'Return — bringing it home',
+            '8': 'Change — master of both worlds'
+        };
+
+        const characters = Array.isArray(storyData?.characters) ? storyData.characters : [];
+        const charById = new Map(characters.map(c => [c.id, c]));
+
+        const events = [...(Array.isArray(storyData?.events) ? storyData.events : [])]
+            .filter((e) => e && String(e.location || '').trim())
+            .sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0) || (Number(a?.id) || 0) - (Number(b?.id) || 0));
+
+        if (events.length === 0) {
+            return [
+                'Top-down bird\'s eye view ancient Chinese Tang Dynasty ink-wash style map.',
+                'Title banner (painted seal calligraphy, integrated into art): Ghost Border Region • Tang Dynasty',
+                'Orthographic overhead (flat), no isometric tilt. Parchment field, soft mist at edges.',
+                'Add timeline events with a **location** set in the app to list beats, glowing purple story progression lines, dashed purple time-travel jump hints, gold pins for canon events, and character avatar nodes.',
+                '',
+                'Constraints: avoid crisp modern UI fonts; if text appears, brushstroke / seal style only. No watermarks. Cinematic, highly detailed, 1024×1024.'
+            ].join('\n');
+        }
+
+        const jumpPairs = [];
+        for (let i = 1; i < events.length; i += 1) {
+            if (this.ghostBorderStoryJumpForPrompt(events[i - 1], events[i])) {
+                jumpPairs.push(`Between stop ${i} and ${i + 1}: use a **dashed purple** arc or river-fork (time-travel / era-shift jump), distinct from the solid glowing purple story spine.`);
+            }
+        }
+
+        const orderedStops = events.map((e, i) => {
+            const b = e.beat != null && e.beat !== '' ? String(e.beat) : null;
+            const beatPhrase = b ? `Story Circle beat ${b} (${beatLabels[b] || 'story beat'})` : 'Story Circle beat unassigned';
+            const loc = String(e.location || '').trim();
+            const title = String(e.title || 'Untitled event').trim();
+            const period = String(e.period || '').trim();
+            const desc = String(e.description || '').trim();
+            const canon = Boolean(e.isCanon);
+            const pinNote = canon
+                ? '**CANON event — use a prominent gold map pin / seal marker here**'
+                : 'Non-canon beat — smaller violet-silver pin or ring';
+            const involved = Array.isArray(e.involvedCharacterIds) ? e.involvedCharacterIds : [];
+            const names = involved
+                .map((id) => charById.get(id))
+                .filter(Boolean)
+                .map((c) => String(c.name || '').trim())
+                .filter(Boolean);
+            const avatarLine = names.length
+                ? `     — Character avatars: place **small circular portrait medallions** near this pin for: ${names.join(', ')} (Tang-era costume, readable as faces-from-above, not modern passport photos).`
+                : null;
+            const bits = [
+                `  ${i + 1}. "${title}"`,
+                `     — Map anchor: ${loc}`,
+                `     — ${beatPhrase}`,
+                `     — ${pinNote}`,
+                period ? `     — Act / period: ${period}` : null,
+                desc ? `     — Story beat summary: ${desc.slice(0, 200)}${desc.length > 200 ? '…' : ''}` : null,
+                avatarLine
+            ].filter(Boolean);
+            return bits.join('\n');
+        }).join('\n\n');
+
+        const uniqueLocs = [...new Set(events.map((e) => String(e.location || '').trim()).filter(Boolean))];
+        const locEcho = uniqueLocs.length
+            ? `Terrain must echo these **exact story locations** (abstract geography, no typed labels): ${uniqueLocs.join('; ')}.`
+            : '';
+
+        const jumpBlock = jumpPairs.length
+            ? ['Time-travel / era-shift jumps (dashed purple, separate from main spine):', ...jumpPairs, ''].join('\n')
+            : '';
+
+        return [
+            'Top-down bird\'s eye view ancient Chinese Tang Dynasty ink-wash style map.',
+            'Sumi-e ink wash blended with a polished fantasy RPG **realm atlas** look; orthographic bird\'s eye, not isometric.',
+            '',
+            '**Map title** (banner or gold seal strip along upper margin, brush-calligraphy style): Ghost Border Region • Tang Dynasty',
+            '',
+            '**Story progression (solid line):** a **glowing purple–violet narrative spine** connects the following stops **in chronological order** (same order as below). Line should feel slightly raised with soft outer bloom.',
+            '**Canon emphasis:** **gold pins / gold seal markers** on canon events; subtler cool-violet markers on non-canon beats.',
+            '**Time-travel jumps:** where indicated below, add **dashed purple** connectors or forked rivers (distinct from the solid progression line).',
+            '**Character avatars:** small circular portrait medallions at stops that list cast names.',
+            '',
+            'Visual language:',
+            '- Rivers: indigo–violet ribbons with soft bloom; mountains: brushed gray ink; forests: teal shadow masses.',
+            '- Palace / capital: nested courtyards, gold-umber roof geometry (abstract).',
+            '- Market: warm umber blocks, plaza voids, canal hints.',
+            '- Portal / cave pocket: cold violet ring or spiral mist (western sector feel).',
+            '- Secret metropolis / anomaly: cooler gray-violet mist blocks (optional).',
+            '',
+            jumpBlock,
+            'Ordered narrative stops (with locations — layout + mood; beat numbers may appear as **micro-gold embossing** on pins only):',
+            orderedStops,
+            '',
+            locEcho,
+            '',
+            'Constraints: no modern UI chrome, no QR codes, no watermarks. Prefer painterly treatment over sharp vector text. Target **1024×1024**.'
+        ].join('\n');
+    },
+
+    /**
+     * Uses the configured **text** AI (LM Studio / Ollama) to expand the draft into a single copy-paste Grok Imagine prompt.
+     * Falls back to {@link buildStoryWorldMapGrokPrompt} if the service is offline or the call fails.
+     * @param {object} storyData
+     * @returns {Promise<string>}
+     */
+    async generateStoryWorldMapGrokPromptDetailed(storyData) {
+        const draft = this.buildStoryWorldMapGrokPrompt(storyData);
+        await this.checkConnection();
+        if (!this.connected) {
+            return draft;
+        }
+
+        const instructions = `You write ONE final image-generation prompt for **Grok Imagine** (or similar). Output **plain text only** — no markdown fences, no title line like "Here is the prompt", no bullet markdown — just the prompt itself.
+
+The prompt MUST naturally weave in ALL of the following requirements:
+1) The exact phrase: Top-down bird's eye view ancient Chinese Tang Dynasty ink-wash style map
+2) All locations and their **exact story beats** from the ordered list in the draft (preserve order)
+3) Glowing **purple** story progression lines connecting events in **chronological order**
+4) **Gold pins** (or gold seal markers) for **canon** events; subtler markers for non-canon where the draft says so
+5) **Character avatars** (small circular portrait medallions) where the draft names cast members at a stop
+6) Map title as ornate integrated art: Ghost Border Region • Tang Dynasty
+7) **Dashed purple** lines for time-travel / era-shift jumps where the draft mentions them
+
+Keep it vivid, cinematic, and ready to paste. Preserve Tang-era material culture (no anachronistic skyscrapers unless the draft explicitly asks for contrast). Length: roughly 900–2200 words acceptable if detail-rich.
+
+--- DRAFT TO EXPAND ---
+
+${draft}`;
+
+        try {
+            const out = String(await this.callAI(instructions, 2200) || '').trim();
+            return out || draft;
+        } catch (error) {
+            console.warn('generateStoryWorldMapGrokPromptDetailed:', error);
+            return draft;
+        }
+    },
+
+    /**
      * Analyze full story
      */
     async analyzeStory(storyData) {
         const storyContext = `
 Story Title: C Drama Time Travel Romance
 Characters: ${storyData.characters.map(c => `${c.name} (${c.type}): ${c.background}`).join('\n')}
-Timeline: ${storyData.events.map(e => `${e.title} (${e.period}, Beat ${e.beat}): ${e.description}`).join('\n')}
+Timeline: ${storyData.events.map(e => {
+            const loc = e.location ? ` @ ${e.location}` : '';
+            return `${e.title} (${e.period}, Beat ${e.beat})${loc}: ${e.description}`;
+        }).join('\n')}
 Plot: ${storyData.plot.map(p => `${p.act}: ${p.content}`).join('\n')}
 `;
 
@@ -360,7 +526,7 @@ Guidance:
 
 STORY:\n${storyContext}`;
 
-        return this.callAI(prompt, 800);
+        return this.callAI(prompt, 1200);
     },
 
     /**
@@ -434,6 +600,173 @@ Evaluate:
 Use the context of a time-travel romance in the Tang Dynasty.`;
 
         return this.callAI(prompt, 800);
+    },
+
+    /**
+     * Historical / material / institutional plausibility — **not** character psychology or story-circle structure.
+     * @param {object} storyData
+     * @returns {Promise<string>}
+     */
+    async analyzeHistoricalAccuracy(storyData) {
+        const plotLines = (storyData.plot || []).map((p) => `${p.act}: ${p.content}`).join('\n');
+        const polLines = (storyData.politics || []).map((p) => `${p.section}: ${p.content}`).join('\n');
+        const events = (storyData.events || []).map((e) => {
+            const bits = [
+                e.title,
+                e.period,
+                e.location,
+                e.description,
+                e.fullDescription
+            ].filter(Boolean).join(' | ');
+            return bits || e.title;
+        }).join('\n');
+        const workLines = (storyData.workItems || []).map((w) =>
+            `${w.title} (${w.category || 'task'})${w.completed ? ' [done]' : ''}`
+        ).join('\n');
+
+        const castSnap = (storyData.characters || []).map((c) => {
+            const bio = String(c.background || '').slice(0, 320);
+            return `${c.name} | age ${c.age ?? '?'} | role: ${c.role || '—'} | type: ${c.type || '—'}\n   Bio (for titles/ranks/era cues only): ${bio}${bio.length >= 320 ? '…' : ''}`;
+        }).join('\n\n');
+
+        const prompt = `You are a **historical consultant for Chinese period drama** (default frame: **Tang dynasty** or adjacent unless the text clearly implies another period).
+
+${this.getCanonGuardrail(storyData)}
+
+Your job is **historical, material, geographic, and institutional plausibility** — **outside** of:
+- deep character psychology or motivation therapy,
+- whether the story “works” as fiction emotionally,
+- Dan Harmon beat coverage (ignore beat shape).
+
+Focus on:
+1. **Chronology & era logic** — reign names, era labels, impossible calendars, absurd travel times for horses/barges/relay, seasonal mismatches.
+2. **Court & bureaucracy** — titles (尚书, 刺史, etc.), ministries, censors, examinations, edict procedure, punishment vocabulary that sounds wrong for the implied century.
+3. **Military & logistics** — ranks, formations, granaries, corvée, salt/monopoly language, fortification scale vs village drama.
+4. **Material culture** — textiles, metal money, paper/ink, lighting, food staples, architecture (palace vs manor vs market), hygiene defaults.
+5. **Technology & chemistry** — distillation, sulfur, paper tech: flag **accidental** modern slips (plastic, wrong firearms jargon, grid electricity). Accept deliberate “stranger brings method” if labeled as fiction license.
+6. **Geography** — real place names vs invented “Ghost Border” style regions: say when invention is fine vs when a **real** name is misused.
+
+Output format (plain text, no JSON):
+- **Summary** (2–4 sentences): overall historical risk level for this draft.
+- **Findings** — grouped with headings. Each bullet: severity (**Likely issue** | **Uncertain—verify** | **OK / fiction license**), one tight sentence, optional “→ check: …” research hint.
+- **Research angles** — 6–12 bullet keywords or museum/book topics (not a full bibliography).
+
+--- POLITICS / WORLD ---
+${polLines || '(none)'}
+
+--- PLOT OUTLINE (era / regime claims) ---
+${plotLines || '(none)'}
+
+--- TIMELINE (locations + descriptions) ---
+${events || '(none)'}
+
+--- WORK ITEMS ---
+${workLines || '(none)'}
+
+--- CAST (ranks & bios for anachronistic cues only; not for arc critique) ---
+${castSnap || '(none)'}`;
+
+        return this.callAI(prompt, 1200);
+    },
+
+    /**
+     * Cross-check recent AI reports + current story data; return JSON with `issuesFound` and `suggestedActions`
+     * (same suggestedActions shape as full story analysis) for App to save and apply.
+     * @param {object} storyData
+     * @returns {Promise<string>} raw model text (JSON)
+     */
+    async generateStoryBuildSuggestions(storyData) {
+        const reports = Array.isArray(storyData?.aiReports) ? storyData.aiReports : [];
+        const prior = reports
+            .filter((r) => r && r.status === 'success' && r.type && r.type !== 'story-build')
+            .slice(0, 6)
+            .map((r) => {
+                const body = String(r.content || '').trim();
+                const clip = body.length > 4000 ? `${body.slice(0, 4000)}\n… [truncated]` : body;
+                return `### ${r.title} (type: ${r.type})\n${clip}`;
+            })
+            .join('\n\n---\n\n');
+
+        const chars = (storyData.characters || []).slice(0, 48).map((c) => ({
+            id: c.id,
+            name: c.name,
+            type: c.type,
+            role: c.role,
+            isCanon: Boolean(c.isCanon),
+            background: String(c.background || '').slice(0, 500),
+            personality: String(c.personality || '').slice(0, 320)
+        }));
+        const evs = (storyData.events || []).slice(0, 72).map((e) => ({
+            id: e.id,
+            order: e.order,
+            title: e.title,
+            beat: e.beat,
+            period: e.period,
+            location: e.location,
+            isCanon: Boolean(e.isCanon),
+            description: String(e.description || '').slice(0, 360)
+        }));
+        const compact = {
+            characters: chars,
+            events: evs,
+            plot: storyData.plot || [],
+            politics: (storyData.politics || []).slice(0, 16),
+            workItems: (storyData.workItems || []).slice(0, 24).map((w) => ({
+                id: w.id,
+                title: w.title,
+                category: w.category,
+                completed: Boolean(w.completed)
+            }))
+        };
+
+        const prompt = `You are a senior C-drama story editor. Synthesize **issues** from the story snapshot and any prior AI reports, then propose **concrete story builds** (new beats, tasks, character notes).
+
+${this.getCanonGuardrail(storyData)}
+
+Output ONLY valid JSON (no markdown, no code fences). Use this exact shape:
+{
+  "issuesFound": [
+    { "severity": "high", "area": "timeline", "summary": "One-line issue" }
+  ],
+  "suggestedActions": [
+    {
+      "actionType": "timeline_event",
+      "title": "Short beat title",
+      "description": "What happens; why it fixes an issue",
+      "location": "Optional location string or empty",
+      "relatedTo": ["Character:Feng", "Event:Some prior beat title"]
+    },
+    {
+      "actionType": "work_item",
+      "title": "Task title",
+      "description": "What the writer should do",
+      "category": "Scene Planning|Plot Holes|Character Development|Historical Research|Worldbuilding|Dialogue",
+      "relatedTo": []
+    },
+    {
+      "actionType": "character_arc_update",
+      "title": "Arc tweak label",
+      "description": "Specific behavioral or motivation change",
+      "relatedTo": ["Character:Prince Yu"]
+    }
+  ]
+}
+
+Rules:
+- **issuesFound**: 4–14 items; severity high|med|low; area one of timeline|character|plot|politics|pacing|worldbuilding.
+- **suggestedActions**: 8–20 items; every item should tie to at least one issue (name it in description if helpful).
+- Prefer **draft** fixes: new timeline beats, research tasks, or character note injections — do not contradict isCanon items; refine around them.
+- timeline_event: give a **new** beat title (not duplicate of an existing title in snapshot).
+- work_item: include **category** when actionType is work_item.
+- character_arc_update: **relatedTo** must include at least one "Character:ExactName" from the snapshot.
+
+PRIOR AI REPORTS (may overlap — dedupe and prioritize):
+${prior || '(No saved reports yet — infer issues only from the snapshot.)'}
+
+STORY SNAPSHOT:
+${JSON.stringify(compact, null, 2)}`;
+
+        return this.callAI(prompt, 2400);
     },
 
     /**
@@ -606,3 +939,6 @@ Use the context of a time-travel romance in the Tang Dynasty.`;
         throw new Error('Deep research API returned an empty response.');
     }
 };
+
+// Keep legacy global access for inline onclick handlers and for StorageService.importFromNotes().
+globalThis.AIService = AIService;

@@ -3,6 +3,19 @@
  * Core application logic and UI management
  */
 
+import {
+    StorageService,
+    TIMELINE_LOCATION_PRESETS,
+    TIMELINE_LOCATION_OTHER,
+    splitTimelineLocation,
+    joinTimelineLocation,
+    createTimelineEvent,
+    updateTimelineEvent,
+    getGhostBorderCanonStoryCore
+} from './storage.js';
+import { AIService } from './ai-service.js';
+import { TAB_RENDERERS } from './components/tabs.js';
+
 const App = {
     storyData: StorageService.loadStoryData(),
     currentEditingEventId: null,
@@ -63,13 +76,79 @@ const App = {
      * Initialize the application
      */
     init() {
+        this.mountTabs();
         this.initTheme();
         this.render();
         this.setupEventListeners();
+        this.initMobileQuickAdd();
         AIService.checkConnection().then(() => this.updateAIStatus());
         setInterval(() => {
             AIService.checkConnection().then(() => this.updateAIStatus());
         }, 5000);
+    },
+
+    // ============ MOBILE QUICK ADD ============
+
+    initMobileQuickAdd() {
+        const sheet = document.getElementById('mobileQuickAddSheet');
+        if (sheet) {
+            sheet.classList.remove('active');
+        }
+        document.addEventListener('click', (e) => {
+            const wrap = document.getElementById('mobileQuickAdd');
+            const target = e.target;
+            if (!wrap || !(target instanceof Element)) return;
+            if (wrap.contains(target)) return;
+            this.closeMobileQuickAdd();
+        });
+    },
+
+    toggleMobileQuickAdd() {
+        const sheet = document.getElementById('mobileQuickAddSheet');
+        if (!sheet) return;
+        sheet.classList.toggle('active');
+    },
+
+    closeMobileQuickAdd() {
+        const sheet = document.getElementById('mobileQuickAddSheet');
+        if (!sheet) return;
+        sheet.classList.remove('active');
+    },
+
+    quickAdd(kind) {
+        const k = String(kind || '');
+        this.closeMobileQuickAdd();
+        if (k === 'character') {
+            this.switchTab('characters');
+            setTimeout(() => document.getElementById('newCharName')?.focus(), 0);
+            return;
+        }
+        if (k === 'event') {
+            this.switchTab('timeline');
+            setTimeout(() => document.getElementById('newEventTitle')?.focus(), 0);
+            return;
+        }
+        if (k === 'task') {
+            this.switchTab('workitems');
+            setTimeout(() => document.getElementById('newWorkTitle')?.focus(), 0);
+        }
+    },
+
+    /**
+     * Render tab shells from component modules.
+     * This keeps index.html as a pure shell.
+     */
+    mountTabs() {
+        Object.entries(TAB_RENDERERS).forEach(([tabId, renderFn]) => {
+            const el = document.getElementById(tabId);
+            if (!el) return;
+            try {
+                el.innerHTML = renderFn();
+            } catch (error) {
+                el.innerHTML = `<div class="rounded-2xl border border-rose-500/25 bg-rose-500/10 p-5 text-rose-50"><h2 class="m-0 text-lg font-black tracking-tight">Failed to render tab</h2><div class="mt-2 text-sm text-rose-100/80">Tab: ${this.escapeHTML(tabId)}</div></div>`;
+                console.error('Tab render failed:', tabId, error);
+            }
+        });
     },
 
     // ============ THEME (DARK MODE) ============
@@ -98,6 +177,20 @@ const App = {
     applyTheme(theme) {
         const next = theme === 'dark' ? 'dark' : 'light';
         document.body.dataset.theme = next;
+        // Tailwind v3 class-based dark mode (see index.html tailwind.config)
+        document.documentElement.classList.toggle('dark', next === 'dark');
+        // Keep Tailwind utility-driven page chrome aligned with the saved theme.
+        document.body.className =
+            next === 'dark'
+                ? 'min-h-screen bg-[#09090b] text-zinc-100 antialiased'
+                : 'min-h-screen bg-zinc-50 text-zinc-900 antialiased';
+        const main = document.querySelector('.main');
+        if (main) {
+            main.className =
+                next === 'dark'
+                    ? 'main main-content min-w-0 bg-[#09090b]'
+                    : 'main main-content min-w-0 bg-zinc-50';
+        }
         const btn = document.getElementById('themeToggleBtn');
         if (btn) {
             btn.textContent = next === 'dark' ? 'Light' : 'Dark';
@@ -121,6 +214,8 @@ const App = {
             { id: 'add-character', label: 'Add Character', run: () => { this.switchTab('characters'); setTimeout(() => document.getElementById('newCharName')?.focus(), 0); } },
             { id: 'add-timeline', label: 'Add Timeline Event', run: () => { this.switchTab('timeline'); setTimeout(() => document.getElementById('newEventTitle')?.focus(), 0); } },
             { id: 'analyze-story', label: 'Analyze Story', run: () => { this.switchTab('dashboard'); this.analyzeStory(); } },
+            { id: 'suggest-story-build', label: 'Suggest story builds from issues', run: () => { this.switchTab('dashboard'); this.suggestStoryBuildFromIssues(); } },
+            { id: 'analyze-history', label: 'Check historical accuracy', run: () => { this.switchTab('dashboard'); this.analyzeHistoricalAccuracy(); } },
             { id: 'gen-master', label: 'Generate Master Document', run: () => { this.switchTab('master-document'); this.regenerateMasterDocument(); } },
             { id: 'import-notes', label: 'Import Notes', run: () => { this.switchTab('dashboard'); this.openImportNotesModal(); } }
         ];
@@ -248,7 +343,11 @@ const App = {
         const active = (btnId, isActive) => {
             const el = document.getElementById(btnId);
             if (!el) return;
-            el.classList.toggle('active', isActive);
+            const on =
+                'rounded-full border border-violet-500 bg-violet-950/90 px-3 py-1 text-xs font-extrabold text-white shadow-lg shadow-violet-500/20 transition';
+            const off =
+                'rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1 text-xs font-extrabold text-zinc-300 transition hover:border-violet-500/30 hover:bg-zinc-800 hover:text-zinc-50';
+            el.className = `${isActive ? on : off}`;
         };
         active('chipTypeFriendly', this.globalSearch.characterTypes.has('friendly'));
         active('chipTypeAntagonist', this.globalSearch.characterTypes.has('antagonist'));
@@ -275,7 +374,10 @@ const App = {
         }
         if (actionBtn) {
             actionBtn.textContent = isCanon ? 'Remove Canon' : 'Mark as Canon';
-            actionBtn.style.background = isCanon ? '#ef4444' : '#d97706';
+            actionBtn.style.background = '';
+            actionBtn.className = isCanon
+                ? 'rounded-xl border border-rose-500/35 bg-rose-500/10 px-4 py-2.5 text-sm font-extrabold text-rose-100 hover:bg-rose-500/15'
+                : 'rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-2.5 text-sm font-extrabold text-amber-200 hover:bg-amber-400/15';
         }
         document.getElementById('canonConfirmModal')?.classList.add('active');
     },
@@ -315,7 +417,11 @@ const App = {
     },
 
     renderCanonBadge(type, id) {
-        return `<span class="canon-badge" title="Protected – AI imports will not overwrite" onclick="App.openCanonConfirmModal('${type}', ${id}); event.stopPropagation();">🛡️ CANON</span>`;
+        return `<span class="canon-badge canon-shield" title="Canon - protected" onclick="App.openCanonConfirmModal('${type}', ${id}); event.stopPropagation();">🛡️</span>`;
+    },
+
+    renderDraftTag() {
+        return `<span class="draft-tag" title="Draft - not yet canon">Draft</span>`;
     },
 
     matchesGlobalQuery(text) {
@@ -488,10 +594,9 @@ const App = {
         document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
         document.getElementById(tabName).classList.add('active');
 
-        const matchingButton = document.querySelector(`.tab-button[onclick*="App.switchTab('${tabName}')"]`);
-        if (matchingButton) {
-            matchingButton.classList.add('active');
-        }
+        document.querySelectorAll(`.tab-button[onclick*="App.switchTab('${tabName}')"]`).forEach(btn => {
+            btn.classList.add('active');
+        });
 
         if (tabName === 'timeline') {
             this.renderTimelineWithCircle();
@@ -502,9 +607,16 @@ const App = {
         if (tabName === 'visualizer') {
             this.renderStoryboard();
             this.renderVisualGallery();
+            this.renderStoryLocationsOverview();
+            this.renderStoryWorldMap();
         }
         if (tabName === 'templates') {
             this.renderTemplates();
+        }
+        if (tabName === 'dashboard') {
+            this.updateDashboard();
+            this.renderDashboardMiniTimeline();
+            this.renderReviewDrafts();
         }
 
         // Keep navigation feeling snappy by scrolling main content to top.
@@ -525,6 +637,7 @@ const App = {
         this.renderPolitics();
         this.renderWorkItems();
         this.updateDashboard();
+        this.renderDashboardMiniTimeline();
         this.renderReviewDrafts();
         this.renderCanonStatusIndicator();
         this.renderAIActionItems();
@@ -532,12 +645,13 @@ const App = {
         this.renderAISuggestedActions();
         this.renderStoryboard();
         this.renderVisualGallery();
+        this.renderStoryWorldMap();
         this.renderMasterDocument();
         this.updateGlobalChipUI();
     },
 
     renderCanonStatusIndicator() {
-        const el = document.getElementById('canonStatusIndicator');
+        const el = document.getElementById('canonStatusIndicatorText');
         if (!el) return;
         const canon = StorageService.getAllCanonItems();
         const canonCount =
@@ -545,14 +659,64 @@ const App = {
             + (canon.timelineEvents?.length || 0)
             + (canon.workItems?.length || 0);
         const draftsCount = this.getAllDraftItems().length;
-        el.textContent = `${canonCount} Canon items protected • ${draftsCount} Drafts pending review`;
+        el.innerHTML = `<span class="text-violet-300">${canonCount} Canon</span><span class="text-zinc-600"> · </span><span class="text-violet-400">protected</span><span class="text-zinc-600"> · </span><span class="text-violet-300">${draftsCount} Drafts</span><span class="text-zinc-500"> pending</span>`;
     },
 
     goToDraftsReview() {
-        this.switchTab('dashboard');
-        setTimeout(() => {
-            document.getElementById('draftsReviewContainer')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }, 0);
+        this.openDraftsPanel();
+    },
+
+    openDraftsPanel() {
+        const modal = document.getElementById('draftsPanelModal');
+        if (!modal) return;
+        modal.classList.add('active');
+        this.renderDraftsPanel();
+    },
+
+    closeDraftsPanel() {
+        document.getElementById('draftsPanelModal')?.classList.remove('active');
+    },
+
+    renderDraftsPanel() {
+        const container = document.getElementById('draftsPanelBody');
+        if (!container) return;
+        container.innerHTML = this.getDraftsListHTML(140);
+    },
+
+    getDraftsListHTML(limit = 80) {
+        const drafts = this.getAllDraftItems();
+        if (drafts.length === 0) {
+            return '<div class="ai-result suggestion">No drafts right now. Everything is Canon or you haven’t added new items yet.</div>';
+        }
+
+        const badge = (type) => {
+            if (type === 'character') return '👥 Character';
+            if (type === 'timeline') return '🗓️ Timeline';
+            return '✅ Work Item';
+        };
+
+        const max = Math.max(0, Number(limit) || 80);
+        return `
+            <div class="preview-card" style="margin:0;">
+                <div class="mb-2 text-sm text-zinc-400">Draft items (${drafts.length})</div>
+                <ul class="preview-list" style="margin:0;">
+                    ${drafts.slice(0, max).map(d => `
+                        <li class="preview-item">
+                            <div style="min-width: 140px;" class="preview-item-sub">${badge(d.type)}</div>
+                            <div style="flex:1;">
+                                <div class="preview-item-title">${this.escapeHTML(d.title || '')}</div>
+                                <div class="preview-item-sub">${this.escapeHTML(d.subtitle || '')}</div>
+                            </div>
+                            <div class="flex flex-wrap gap-2">
+                                <button class="rounded-lg border border-amber-400/35 bg-amber-400/10 px-3 py-1.5 text-[11px] font-extrabold text-amber-200 hover:bg-amber-400/15" onclick="App.promoteDraft('${d.type}', ${d.id})">Promote to Canon</button>
+                                <button class="rounded-lg bg-gradient-to-r from-indigo-500 to-violet-600 px-3 py-1.5 text-[11px] font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.openMergeDraftModal('${d.type}', ${d.id})">Merge into Canon</button>
+                                <button class="delete-btn rounded-lg px-3 py-1.5 text-[11px] font-extrabold" onclick="App.deleteDraft('${d.type}', ${d.id})">Delete Draft</button>
+                            </div>
+                        </li>
+                    `).join('')}
+                </ul>
+            </div>
+        `;
     },
 
     // ============ REVIEW DRAFTS ============
@@ -563,7 +727,10 @@ const App = {
             if (c && !c.isCanon) drafts.push({ type: 'character', id: c.id, title: c.name, subtitle: `${c.type || 'type?'} • ${c.role || 'Role TBD'}` });
         });
         (Array.isArray(this.storyData.events) ? this.storyData.events : []).forEach(e => {
-            if (e && !e.isCanon) drafts.push({ type: 'timeline', id: e.id, title: e.title, subtitle: `${e.period || 'Period TBD'}${e.beat ? ` • Beat ${e.beat}` : ''}` });
+            if (e && !e.isCanon) {
+                const locBit = e.location ? ` · ${e.location}` : '';
+                drafts.push({ type: 'timeline', id: e.id, title: e.title, subtitle: `${e.period || 'Period TBD'}${e.beat ? ` • Beat ${e.beat}` : ''}${locBit}` });
+            }
         });
         (Array.isArray(this.storyData.workItems) ? this.storyData.workItems : []).forEach(w => {
             if (w && !w.isCanon) drafts.push({ type: 'workItem', id: w.id, title: w.title, subtitle: `${w.category || 'Scene Planning'}${w.completed ? ' • completed' : ''}` });
@@ -574,40 +741,7 @@ const App = {
     renderReviewDrafts() {
         const container = document.getElementById('draftsReviewContainer');
         if (!container) return;
-
-        const drafts = this.getAllDraftItems();
-        if (drafts.length === 0) {
-            container.innerHTML = '<div class="ai-result suggestion">No drafts right now. Everything is Canon or you haven’t added new items yet.</div>';
-            return;
-        }
-
-        const badge = (type) => {
-            if (type === 'character') return '👥 Character';
-            if (type === 'timeline') return '🗓️ Timeline';
-            return '✅ Work Item';
-        };
-
-        container.innerHTML = `
-            <div class="preview-card" style="margin:0;">
-                <div class="text-sm text-gray-600" style="margin-bottom:0.5rem;">Draft items (${drafts.length})</div>
-                <ul class="preview-list" style="margin:0;">
-                    ${drafts.slice(0, 80).map(d => `
-                        <li class="preview-item">
-                            <div style="min-width: 140px;" class="preview-item-sub">${badge(d.type)}</div>
-                            <div style="flex:1;">
-                                <div class="preview-item-title">${this.escapeHTML(d.title || '')}</div>
-                                <div class="preview-item-sub">${this.escapeHTML(d.subtitle || '')}</div>
-                            </div>
-                            <div style="display:flex; gap:0.4rem; flex-wrap: wrap;">
-                                <button style="background:#d97706; font-size:0.8rem; padding:0.45rem 0.7rem;" onclick="App.promoteDraft('${d.type}', ${d.id})">Promote to Canon</button>
-                                <button style="background:#2563eb; font-size:0.8rem; padding:0.45rem 0.7rem;" onclick="App.openMergeDraftModal('${d.type}', ${d.id})">Merge into Canon</button>
-                                <button class="delete-btn" style="font-size:0.8rem; padding:0.45rem 0.7rem;" onclick="App.deleteDraft('${d.type}', ${d.id})">Delete Draft</button>
-                            </div>
-                        </li>
-                    `).join('')}
-                </ul>
-            </div>
-        `;
+        container.innerHTML = this.getDraftsListHTML(80);
     },
 
     promoteDraft(type, id) {
@@ -725,6 +859,9 @@ const App = {
             canon.fullDescription = append(canon.fullDescription, `${draft.description || ''}\n${draft.fullDescription || ''}`.trim(), 'Draft');
             canon.involvedCharacterIds = union(canon.involvedCharacterIds, draft.involvedCharacterIds);
             canon.tags = union(canon.tags, union(draft.tags, ['imported']));
+            if (!String(canon.location || '').trim() && String(draft.location || '').trim()) {
+                canon.location = String(draft.location).trim();
+            }
             this.storyData.events = this.storyData.events.filter(e => e.id !== draftId);
             this.storyData.events.forEach((e, idx) => { e.order = idx; });
         } else {
@@ -747,16 +884,16 @@ const App = {
     getTemplates() {
         return [
             {
+                id: 'ghost-border-disgraced-grandson',
+                title: 'Ghost Border — The Disgraced Grandson',
+                subtitle: 'Default canon: Feng (logistics veteran), Prince Yu, Lady Lin, Commander Lu, Minister Cui — Tang map beats.',
+                data: this.buildTemplateGhostBorderDisgracedGrandson()
+            },
+            {
                 id: 'classic-palace-intrigue',
                 title: 'Classic Palace Intrigue',
                 subtitle: 'Schemes, factions, hidden heirs, and shifting loyalties.',
                 data: this.buildTemplateClassicPalaceIntrigue()
-            },
-            {
-                id: 'time-travel-romance',
-                title: 'Time-Travel Romance',
-                subtitle: 'Modern mind meets ancient court—love vs. fate.',
-                data: this.buildTemplateTimeTravelRomance()
             },
             {
                 id: 'revenge-redemption',
@@ -778,11 +915,11 @@ const App = {
                     <div class="preview-card">
                         <h4>${this.escapeHTML(t.title)}</h4>
                         <div class="preview-item-sub">${this.escapeHTML(t.subtitle)}</div>
-                        <div style="display:flex; gap:0.5rem; flex-wrap: wrap; margin-top: 0.75rem;">
-                            <button class="ai-btn" onclick="App.previewTemplate('${t.id}')">Preview</button>
-                            <button style="background:#16a34a;" onclick="App.applyTemplate('${t.id}')">Apply Template</button>
+                        <div class="mt-3 flex flex-wrap gap-2">
+                            <button class="rounded-xl border border-zinc-200/60 bg-white/70 px-3 py-2 text-xs font-extrabold text-zinc-900 hover:bg-white dark:border-zinc-800 dark:bg-zinc-950/50 dark:text-zinc-100 dark:hover:bg-zinc-950" onclick="App.previewTemplate('${t.id}')">Preview</button>
+                            <button class="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-3 py-2 text-xs font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.applyTemplate('${t.id}')">Apply template</button>
                         </div>
-                        <div class="text-sm text-gray-600" style="margin-top:0.6rem;">
+                        <div class="mt-2 text-sm text-zinc-400">
                             Includes: ${t.data.characters.length} characters • ${t.data.events.length} timeline beats • ${t.data.relationships.length} relationships
                         </div>
                     </div>
@@ -807,7 +944,7 @@ const App = {
 
         const data = t.data;
         this.storyData.characters = data.characters;
-        this.storyData.events = data.events;
+        this.storyData.events = (data.events || []).map(e => createTimelineEvent(e));
         this.storyData.plot = data.plot;
         this.storyData.politics = data.politics;
         this.storyData.workItems = data.workItems;
@@ -829,14 +966,14 @@ const App = {
         ];
 
         const events = [
-            { id: 1, title: 'Court in Balance', period: 'Act 1', order: 0, beat: '1', description: 'Establish factions and the fragile peace.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['setup'] },
-            { id: 2, title: 'A Whispered Accusation', period: 'Act 1', order: 1, beat: '2', description: 'A scandal surfaces: forged edicts tied to the Prince.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['catalyst'] },
-            { id: 3, title: 'Crossing into the Trap', period: 'Act 1', order: 2, beat: '3', description: 'Lady Shen is ordered to investigate—dangerous either way.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['threshold'] },
-            { id: 4, title: 'Secret Alliances', period: 'Act 2', order: 3, beat: '4', description: 'Mei reveals tunnels; Commander Yan offers guarded help.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['tests'] },
-            { id: 5, title: 'The Hidden Ledger', period: 'Act 2', order: 4, beat: '5', description: 'A ledger proves corruption—but implicates someone close.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['reveal'] },
-            { id: 6, title: 'The Price of Truth', period: 'Act 2', order: 5, beat: '6', description: 'Chancellor strikes back; an ally is punished publicly.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['price'] },
-            { id: 7, title: 'Return to the Throne Room', period: 'Act 3', order: 6, beat: '7', description: 'A risky trial reveals the real mastermind.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['return'] },
-            { id: 8, title: 'A New Court Order', period: 'Act 3', order: 7, beat: '8', description: 'Power shifts; Lady Shen chooses what kind of court survives.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['change'] }
+            { id: 1, title: 'Court in Balance', period: 'Act 1', order: 0, beat: '1', description: 'Establish factions and the fragile peace.', location: 'Daming Palace', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['setup'] },
+            { id: 2, title: 'A Whispered Accusation', period: 'Act 1', order: 1, beat: '2', description: 'A scandal surfaces: forged edicts tied to the Prince.', location: 'Forbidden Garden', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['catalyst'] },
+            { id: 3, title: 'Crossing into the Trap', period: 'Act 1', order: 2, beat: '3', description: 'Lady Shen is ordered to investigate—dangerous either way.', location: 'Daming Palace', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['threshold'] },
+            { id: 4, title: 'Secret Alliances', period: 'Act 2', order: 3, beat: '4', description: 'Mei reveals tunnels; Commander Yan offers guarded help.', location: 'Forbidden Garden', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['tests'] },
+            { id: 5, title: 'The Hidden Ledger', period: 'Act 2', order: 4, beat: '5', description: 'A ledger proves corruption—but implicates someone close.', location: 'Daming Palace', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['reveal'] },
+            { id: 6, title: 'The Price of Truth', period: 'Act 2', order: 5, beat: '6', description: 'Chancellor strikes back; an ally is punished publicly.', location: 'Imperial Market Square', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['price'] },
+            { id: 7, title: 'Return to the Throne Room', period: 'Act 3', order: 6, beat: '7', description: 'A risky trial reveals the real mastermind.', location: 'Daming Palace', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['return'] },
+            { id: 8, title: 'A New Court Order', period: 'Act 3', order: 7, beat: '8', description: 'Power shifts; Lady Shen chooses what kind of court survives.', location: 'Daming Palace', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['change'] }
         ];
 
         const relationships = [
@@ -879,57 +1016,10 @@ const App = {
         };
     },
 
-    buildTemplateTimeTravelRomance() {
-        const characters = [
-            { id: 1, name: 'Dr. Lin Yue', age: 30, role: 'Modern Scientist', type: 'friendly', background: 'Accidentally time-slips into a dynasty at war.', personality: 'Rational, brave, empathetic.', relatedCharacters: [2], notes: '', isCanon: true, tags: ['time-travel'] },
-            { id: 2, name: 'Prince Zhao', age: 25, role: 'Prince (incognito)', type: 'friendly', background: 'Hides identity to expose corruption.', personality: 'Charming, wary, principled.', relatedCharacters: [1, 3], notes: '', isCanon: true, tags: ['romance', 'secret-identity'] },
-            { id: 3, name: 'Minister Han', age: 56, role: 'Corrupt Minister', type: 'antagonist', background: 'Fears prophecy about a “star‑born stranger”.', personality: 'Paranoid, cunning.', relatedCharacters: [2, 4], notes: '', isCanon: true, tags: ['villain'] },
-            { id: 4, name: 'General Qiu', age: 33, role: 'Frontline Commander', type: 'gray', background: 'Needs victory; distrusts outsiders.', personality: 'Blunt, loyal, skeptical.', relatedCharacters: [3], notes: '', isCanon: true, tags: ['war'] }
-        ];
-        const events = [
-            { id: 1, title: 'Before the Slip', period: 'Prologue', order: 0, beat: '1', description: 'Establish Lin’s life and obsession with a theory.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['setup'] },
-            { id: 2, title: 'The Anomaly', period: 'Act 1', order: 1, beat: '2', description: 'A glitch hints something is wrong with reality.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['catalyst'] },
-            { id: 3, title: 'Crossing Centuries', period: 'Act 1', order: 2, beat: '3', description: 'Accident: Lin arrives in the past and must survive.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['threshold'] },
-            { id: 4, title: 'Tests in the Marketplace', period: 'Act 2', order: 3, beat: '4', description: 'She meets the Prince incognito; allies and enemies emerge.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['tests'] },
-            { id: 5, title: 'A Cure that Changes the Court', period: 'Act 2', order: 4, beat: '5', description: 'Lin’s knowledge saves lives and draws attention.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['reveal'] },
-            { id: 6, title: 'The Price of a Miracle', period: 'Act 2', order: 5, beat: '6', description: 'Minister frames Lin; the Prince must reveal something.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['price'] },
-            { id: 7, title: 'Return with the Truth', period: 'Act 3', order: 6, beat: '7', description: 'Lin confronts the time-slip’s cause; love vs duty.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['return'] },
-            { id: 8, title: 'Changed Fate', period: 'Act 3', order: 7, beat: '8', description: 'Resolution: choose the timeline and the relationship.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['change'] }
-        ];
-        const relationships = [
-            { from: 1, to: 2, type: 'romance', description: 'Mutual respect becomes love under pressure.' },
-            { from: 2, to: 3, type: 'enemy', description: 'Minister sees the Prince’s reform as a threat.' }
-        ];
-
-        const byId = new Map(characters.map(c => [c.id, c]));
-        relationships.forEach(r => {
-            const a = byId.get(r.from); const b = byId.get(r.to);
-            if (!a || !b) return;
-            if (!a.relatedCharacters.includes(b.id)) a.relatedCharacters.push(b.id);
-            if (!b.relatedCharacters.includes(a.id)) b.relatedCharacters.push(a.id);
-            const lineA = `Relationship (${r.type}) with ${b.name}: ${r.description}`;
-            const lineB = `Relationship (${r.type}) with ${a.name}: ${r.description}`;
-            a.notes = a.notes ? `${a.notes}\n${lineA}` : lineA;
-            b.notes = b.notes ? `${b.notes}\n${lineB}` : lineB;
-        });
-
-        return {
-            characters,
-            events,
-            relationships,
-            plot: [
-                { act: 'Act 1: The Slip', content: 'A modern scientist is thrown into a past she must decode.' },
-                { act: 'Act 2: The Court’s Gravity', content: 'Her knowledge is power—and a target; romance deepens the stakes.' },
-                { act: 'Act 3: The Choice', content: 'Fix the anomaly or accept a new life and rewritten fate.' }
-            ],
-            politics: [
-                { section: 'Core Conflict', content: 'Reform vs. corruption; war pressure amplifies court stakes.' }
-            ],
-            workItems: [
-                { id: 1, title: 'Define the time-slip mechanism and its rules', category: 'Worldbuilding', completed: false, isCanon: false, tags: [] },
-                { id: 2, title: 'Write the identity reveal scene (Beat 6)', category: 'Dialogue', completed: false, isCanon: false, tags: [] }
-            ]
-        };
+    /** Same payload as `StorageService.initializeStoryData()` story core (Feng / Ghost Border). */
+    buildTemplateGhostBorderDisgracedGrandson() {
+        const core = getGhostBorderCanonStoryCore();
+        return { ...core, relationships: [] };
     },
 
     buildTemplateRevengeRedemption() {
@@ -940,14 +1030,14 @@ const App = {
             { id: 4, name: 'Old Teacher Gu', age: 66, role: 'Mentor', type: 'friendly', background: 'Knows the hidden history and the cost of vengeance.', personality: 'Wise, weary, blunt.', relatedCharacters: [3], notes: '', isCanon: true, tags: ['mentor'] }
         ];
         const events = [
-            { id: 1, title: 'Ashes of the Past', period: 'Act 1', order: 0, beat: '1', description: 'Wei lives under a new name, training in silence.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['setup'] },
-            { id: 2, title: 'A Name Reappears', period: 'Act 1', order: 1, beat: '2', description: 'A witness resurfaces; revenge becomes possible.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['catalyst'] },
-            { id: 3, title: 'Go to the Capital', period: 'Act 1', order: 2, beat: '3', description: 'Wei returns to court disguised, hunting the Duke.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['threshold'] },
-            { id: 4, title: 'Tests of Trust', period: 'Act 2', order: 3, beat: '4', description: 'Princess An suspects Wei; they circle each other.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['tests'] },
-            { id: 5, title: 'Proof and Doubt', period: 'Act 2', order: 4, beat: '5', description: 'Evidence surfaces—but it threatens innocent lives.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['reveal'] },
-            { id: 6, title: 'The Cost of Blood', period: 'Act 2', order: 5, beat: '6', description: 'Wei’s plan causes collateral damage; guilt cracks the mask.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['price'] },
-            { id: 7, title: 'Return with Mercy', period: 'Act 3', order: 6, beat: '7', description: 'Wei chooses a lawful path; the Duke panics.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['return'] },
-            { id: 8, title: 'Redemption or Ruin', period: 'Act 3', order: 7, beat: '8', description: 'Confrontation resolves: truth, sacrifice, and transformation.', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['change'] }
+            { id: 1, title: 'Ashes of the Past', period: 'Act 1', order: 0, beat: '1', description: 'Wei lives under a new name, training in silence.', location: 'Forbidden Garden', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['setup'] },
+            { id: 2, title: 'A Name Reappears', period: 'Act 1', order: 1, beat: '2', description: 'A witness resurfaces; revenge becomes possible.', location: 'Imperial Market Square', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['catalyst'] },
+            { id: 3, title: 'Go to the Capital', period: 'Act 1', order: 2, beat: '3', description: 'Wei returns to court disguised, hunting the Duke.', location: 'Imperial Market Square', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['threshold'] },
+            { id: 4, title: 'Tests of Trust', period: 'Act 2', order: 3, beat: '4', description: 'Princess An suspects Wei; they circle each other.', location: 'Daming Palace', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['tests'] },
+            { id: 5, title: 'Proof and Doubt', period: 'Act 2', order: 4, beat: '5', description: 'Evidence surfaces—but it threatens innocent lives.', location: 'Daming Palace', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['reveal'] },
+            { id: 6, title: 'The Cost of Blood', period: 'Act 2', order: 5, beat: '6', description: 'Wei’s plan causes collateral damage; guilt cracks the mask.', location: 'Daming Palace', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['price'] },
+            { id: 7, title: 'Return with Mercy', period: 'Act 3', order: 6, beat: '7', description: 'Wei chooses a lawful path; the Duke panics.', location: 'Daming Palace', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['return'] },
+            { id: 8, title: 'Redemption or Ruin', period: 'Act 3', order: 7, beat: '8', description: 'Confrontation resolves: truth, sacrifice, and transformation.', location: 'Daming Palace', fullDescription: '', involvedCharacterIds: [], isCanon: true, tags: ['change'] }
         ];
         const relationships = [
             { from: 1, to: 2, type: 'romance', description: 'Suspicion turns into partnership and love.' },
@@ -1197,12 +1287,12 @@ const App = {
             const canonSide = group === 'characters'
                 ? `Name: ${safe(canon.name)}\nType: ${safe(canon.type)}\nRole: ${safe(canon.role)}\nBackground: ${safe(canon.background)}\nNotes: ${safe(canon.notes)}`
                 : group === 'timelineEvents'
-                    ? `Title: ${safe(canon.title)}\nBeat: ${safe(canon.beat)}\nPeriod: ${safe(canon.period)}\nDescription: ${safe(canon.description)}\nNotes: ${safe(canon.fullDescription)}`
+                    ? `Title: ${safe(canon.title)}\nBeat: ${safe(canon.beat)}\nPeriod: ${safe(canon.period)}\nLocation: ${safe(canon.location)}\nDescription: ${safe(canon.description)}\nNotes: ${safe(canon.fullDescription)}`
                     : `Title: ${safe(canon.title)}\nCategory: ${safe(canon.category)}\nCompleted: ${canon.completed ? 'true' : 'false'}`;
             const impSide = group === 'characters'
                 ? `Name: ${safe(imp.name)}\nType: ${safe(imp.type)}\nDescription: ${safe(imp.description)}`
                 : group === 'timelineEvents'
-                    ? `Title: ${safe(imp.title)}\nBeatType: ${safe(imp.beatType)}\nDescription: ${safe(imp.description)}`
+                    ? `Title: ${safe(imp.title)}\nBeatType: ${safe(imp.beatType)}\nLocation: ${safe(imp.location)}\nDescription: ${safe(imp.description)}`
                     : `Title: ${safe(imp.title)}\nCategory: ${safe(imp.category)}`;
 
             return `
@@ -1235,7 +1325,7 @@ const App = {
         ].join('');
 
         container.innerHTML = `
-            ${conflictsHtml ? `<div class="ai-result warning"><strong>Conflicts with Canon</strong><div class="text-sm text-gray-600" style="margin-top:0.25rem;">Canon items are protected by default. Resolve conflicts to proceed.</div></div>${conflictsHtml}` : ''}
+            ${conflictsHtml ? `<div class="ai-result warning"><strong>Conflicts with Canon</strong><div class="text-sm text-zinc-400" style="margin-top:0.25rem;">Canon items are protected by default. Resolve conflicts to proceed.</div></div>${conflictsHtml}` : ''}
             <div class="preview-grid">
                 ${renderList('Characters', 'characters', extracted.characters, (c, idx, checked) => `
                     <li class="preview-item">
@@ -1391,31 +1481,31 @@ const App = {
             <div class="compare-grid">
                 <div class="compare-block">
                     <div class="compare-col-title">Current Story</div>
-                    <div class="text-sm text-gray-600">Characters (${existingChars.length})</div>
+                    <div class="text-sm text-zinc-400">Characters (${existingChars.length})</div>
                     ${currentList(existingChars, c => `<li class="compare-row"><div><div class="preview-item-title">${safe(c.name)}</div><div class="preview-item-sub">${safe(c.role || c.type || '')}</div></div></li>`)}
-                    <div class="text-sm text-gray-600" style="margin-top:0.75rem;">Timeline (${existingEvents.length})</div>
+                    <div class="text-sm text-zinc-400" style="margin-top:0.75rem;">Timeline (${existingEvents.length})</div>
                     ${currentList(existingEvents, e => `<li class="compare-row"><div><div class="preview-item-title">${safe(e.title)}</div><div class="preview-item-sub">${safe(e.period || '')}</div></div></li>`)}
-                    <div class="text-sm text-gray-600" style="margin-top:0.75rem;">Relationships (linked)</div>
+                    <div class="text-sm text-zinc-400" style="margin-top:0.75rem;">Relationships (linked)</div>
                     ${currentList(existingRel, r => `<li class="compare-row"><div class="preview-item-sub">${safe(r)}</div></li>`)}
                 </div>
 
                 <div class="compare-block">
                     <div class="compare-col-title">Suggested Additions</div>
-                    <div class="text-sm text-gray-600">Characters (${(extracted.characters || []).length})</div>
+                    <div class="text-sm text-zinc-400">Characters (${(extracted.characters || []).length})</div>
                     ${suggestedList('characters', extracted.characters || [], c => `
                         <div>
                             <div class="preview-item-title">${safe(c.name)} <span class="preview-item-sub">(${safe(c.type)})</span></div>
                             ${c.description ? `<div class="preview-item-sub">${safe(c.description)}</div>` : ''}
                         </div>
                     `)}
-                    <div class="text-sm text-gray-600" style="margin-top:0.75rem;">Timeline (${(extracted.timelineEvents || []).length})</div>
+                    <div class="text-sm text-zinc-400" style="margin-top:0.75rem;">Timeline (${(extracted.timelineEvents || []).length})</div>
                     ${suggestedList('timelineEvents', extracted.timelineEvents || [], e => `
                         <div>
                             <div class="preview-item-title">${safe(e.title)}</div>
                             <div class="preview-item-sub">${safe([e.beatType ? `Beat: ${e.beatType}` : '', e.description].filter(Boolean).join(' • '))}</div>
                         </div>
                     `)}
-                    <div class="text-sm text-gray-600" style="margin-top:0.75rem;">Relationships (${(extracted.relationships || []).length})</div>
+                    <div class="text-sm text-zinc-400" style="margin-top:0.75rem;">Relationships (${(extracted.relationships || []).length})</div>
                     ${suggestedList('relationships', extracted.relationships || [], r => `
                         <div>
                             <div class="preview-item-title">${safe(r.from)} ↔ ${safe(r.to)} <span class="preview-item-sub">(${safe(r.type || 'other')})</span></div>
@@ -1578,18 +1668,19 @@ const App = {
             const desc = safeStr(e.description);
             const combinedDesc = [beatType ? `[Beat: ${beatType}]` : '', desc].filter(Boolean).join(' ');
 
-            const newEvent = {
+            const newEvent = createTimelineEvent({
                 id: nextEventId++,
                 title: safeStr(e.title),
                 period: '',
                 order: existingEvents.length,
                 beat: null,
                 description: combinedDesc,
+                location: safeStr(e.location),
                 fullDescription: '',
                 involvedCharacterIds: [],
                 isCanon: false,
                 tags: tagsImported
-            };
+            });
             existingEvents.push(newEvent);
             eventByTitle.set(titleKey, newEvent);
             eventsAdded += 1;
@@ -1865,7 +1956,8 @@ const App = {
                     .map(rc => safe(rc.name))
                     .filter(Boolean);
 
-                lines.push(`- **${safe(c.name) || 'Unnamed'}** (${safe(c.role) || 'Role TBD'} • ${c.type || 'type?'} • age ${Number.isFinite(c.age) ? c.age : 0})`);
+                const charCanon = c.isCanon ? ' `[CANON]`' : '';
+                lines.push(`- **${safe(c.name) || 'Unnamed'}** (${safe(c.role) || 'Role TBD'} • ${c.type || 'type?'} • age ${Number.isFinite(c.age) ? c.age : 0})${charCanon}`);
                 if (safe(c.background)) lines.push(`  - Background: ${safe(c.background)}`);
                 if (safe(c.personality)) lines.push(`  - Personality: ${safe(c.personality)}`);
                 if (relNames.length) lines.push(`  - Relationships: ${relNames.join(', ')}`);
@@ -1881,8 +1973,10 @@ const App = {
             eventsByOrder.forEach(e => {
                 const beat = e?.beat ? String(e.beat) : '';
                 const beatLabel = beat ? `Beat ${beat}: ${beatLabels[beat] || '—'}` : 'No beat assigned';
-                const header = `- E${e.id}: **${safe(e.title) || 'Untitled'}** (${safe(e.period) || 'Period TBD'} • ${beatLabel})`;
+                const canonMark = e.isCanon ? ' `[CANON]`' : '';
+                const header = `- E${e.id}: **${safe(e.title) || 'Untitled'}** (${safe(e.period) || 'Period TBD'} • ${beatLabel})${canonMark}`;
                 lines.push(header);
+                if (safe(e.location)) lines.push(`  - Location: ${safe(e.location)}`);
                 if (safe(e.description)) lines.push(`  - Summary: ${safe(e.description)}`);
                 if (safe(e.fullDescription)) lines.push(`  - Notes: ${safe(e.fullDescription)}`);
             });
@@ -2175,22 +2269,22 @@ const App = {
                     ondrop="App.onCharacterCardDrop(event, ${char.id})"
                     title="Drag onto another character to create a relationship. Bonus: drag onto a timeline event to mark involved characters."
                 >
-                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
+                    <div class="mb-4 flex items-start justify-between gap-3">
                         <div>
                             <h3>
                                 ${this.getCharacterEmoji(char.type)}
                                 ${
                                     this.inlineEdit.kind === 'character' && this.inlineEdit.id === char.id && this.inlineEdit.field === 'name'
                                         ? `<input class="form-input inline-edit-input" style="display:inline-block; width: min(420px, 80vw); margin:0 0 0 0.4rem; padding:0.4rem 0.6rem;" value="${this.escapeHTML(this.inlineEdit.value)}" oninput="App.onInlineEditInput(this.value)" onkeydown="App.onInlineEditKeydown(event)" onblur="App.commitInlineEdit()">`
-                                        : `<span style="cursor:text;" onclick="App.startInlineEdit('character', ${char.id}, 'name', '${this.escapeHTML(char.name)}')">${this.escapeHTML(char.name)}</span>`
+                                        : `<span class="cursor-text" onclick="App.startInlineEdit('character', ${char.id}, 'name', '${this.escapeHTML(char.name)}')">${this.escapeHTML(char.name)}</span>`
                                 }
-                                ${char.isCanon ? this.renderCanonBadge('character', char.id) : ''}
+                                ${char.isCanon ? this.renderCanonBadge('character', char.id) : this.renderDraftTag()}
                             </h3>
-                            <p class="text-sm text-gray-600">${char.age ? char.age + ' years old' : ''} • ${char.role}</p>
+                            <p class="text-sm text-zinc-400">${char.age ? char.age + ' years old' : ''} • ${char.role}</p>
                         </div>
-                        <div style="display:flex; gap:0.5rem;">
-                            <button style="background:#2563eb;" onclick="App.openCharacterEditor(${char.id})">Edit</button>
-                            <button class="delete-btn" onclick="App.deleteCharacter(${char.id})">Delete</button>
+                        <div class="flex gap-2">
+                            <button class="rounded-lg bg-gradient-to-r from-indigo-500 to-violet-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.openCharacterEditor(${char.id})">Edit</button>
+                            <button class="delete-btn rounded-lg px-3 py-1.5 text-xs font-extrabold" onclick="App.deleteCharacter(${char.id})">Delete</button>
                         </div>
                     </div>
                     ${char.background ? `<p class="text-sm mb-2"><strong>Background:</strong> ${char.background}</p>` : ''}
@@ -2206,7 +2300,7 @@ const App = {
                             <button class="add-character-btn" onclick="App.openCharacterSelector(${char.id})">+ Add</button>
                         </div>
                     </div>
-                    ${char.notes ? `<p class="text-sm text-gray-600 mt-2"><strong>Notes:</strong> ${char.notes}</p>` : ''}
+                    ${char.notes ? `<p class="text-sm text-zinc-400 mt-2"><strong>Notes:</strong> ${char.notes}</p>` : ''}
                 </div>
             `;
         }).join('');
@@ -2312,24 +2406,23 @@ const App = {
         const period = document.getElementById('newEventPeriod').value.trim();
         const beat = document.getElementById('newEventBeat').value;
         const description = document.getElementById('newEventDescription').value.trim();
+        const locPreset = document.getElementById('newEventLocationPreset')?.value ?? '';
+        const locCustom = document.getElementById('newEventLocationCustom')?.value ?? '';
 
         if (!title) {
             alert('Please enter an event title');
             return;
         }
 
-        const newEvent = {
+        const newEvent = createTimelineEvent({
             id: Math.max(...this.storyData.events.map(e => e.id), 0) + 1,
             title,
             period,
             order: this.storyData.events.length,
             beat: beat || null,
             description,
-            fullDescription: '',
-            involvedCharacterIds: [],
-            isCanon: false,
-            tags: []
-        };
+            location: joinTimelineLocation(locPreset, locCustom)
+        });
 
         this.storyData.events.push(newEvent);
         this.save();
@@ -2339,6 +2432,22 @@ const App = {
         document.getElementById('newEventPeriod').value = '';
         document.getElementById('newEventBeat').value = '';
         document.getElementById('newEventDescription').value = '';
+        const np = document.getElementById('newEventLocationPreset');
+        const nc = document.getElementById('newEventLocationCustom');
+        if (np) np.value = '';
+        if (nc) nc.value = '';
+        this.syncTimelineLocationFormVisibility('newEvent');
+    },
+
+    /**
+     * Show/hide custom location field when "Other (custom)" is selected.
+     * @param {'newEvent'|'editEvent'} prefix
+     */
+    syncTimelineLocationFormVisibility(prefix) {
+        const sel = document.getElementById(`${prefix}LocationPreset`);
+        const wrap = document.getElementById(`${prefix}LocationCustomWrap`);
+        if (!sel || !wrap) return;
+        wrap.style.display = sel.value === TIMELINE_LOCATION_OTHER ? 'block' : 'none';
     },
 
     /**
@@ -2366,15 +2475,37 @@ const App = {
 
         this.currentEditingEventId = eventId;
         const form = document.getElementById('eventEditorForm');
-        
+        const locParts = splitTimelineLocation(event.location);
+
+        const presetOpts = [
+            `<option value="" ${!locParts.preset ? 'selected' : ''}>— None (optional) —</option>`,
+            ...TIMELINE_LOCATION_PRESETS.map((p) => {
+                const esc = this.escapeHTML(p);
+                return `<option value="${esc}" ${locParts.preset === p ? 'selected' : ''}>${esc}</option>`;
+            }),
+            `<option value="${TIMELINE_LOCATION_OTHER}" ${locParts.preset === TIMELINE_LOCATION_OTHER ? 'selected' : ''}>Other (custom)</option>`
+        ].join('');
+
+        const customWrapDisplay = locParts.preset === TIMELINE_LOCATION_OTHER ? 'block' : 'none';
+
         form.innerHTML = `
             <div>
                 <label class="block text-sm font-medium mb-2">Event Title</label>
-                <input type="text" id="editEventTitle" class="form-input" value="${event.title}">
+                <input type="text" id="editEventTitle" class="form-input" value="${this.escapeHTML(event.title)}">
             </div>
             <div>
                 <label class="block text-sm font-medium mb-2">Period / Act</label>
-                <input type="text" id="editEventPeriod" class="form-input" value="${event.period}">
+                <input type="text" id="editEventPeriod" class="form-input" value="${this.escapeHTML(event.period || '')}">
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-2">Location</label>
+                <select id="editEventLocationPreset" class="form-input" onchange="App.syncTimelineLocationFormVisibility('editEvent')">
+                    ${presetOpts}
+                </select>
+            </div>
+            <div id="editEventLocationCustomWrap" style="display:${customWrapDisplay};">
+                <label class="block text-sm font-medium mb-2">Custom location</label>
+                <input type="text" id="editEventLocationCustom" class="form-input" placeholder="e.g., Riverside pavilion" value="${this.escapeHTML(locParts.custom)}">
             </div>
             <div>
                 <label class="block text-sm font-medium mb-2">Story Beat</label>
@@ -2392,11 +2523,11 @@ const App = {
             </div>
             <div>
                 <label class="block text-sm font-medium mb-2">Short Description</label>
-                <input type="text" id="editEventDescription" class="form-input" value="${event.description}">
+                <input type="text" id="editEventDescription" class="form-input" value="${this.escapeHTML(event.description || '')}">
             </div>
             <div>
                 <label class="block text-sm font-medium mb-2">Detailed Event Notes</label>
-                <textarea id="editEventFullDescription" class="form-input" rows="6" placeholder="Write detailed notes about this event...">${event.fullDescription || ''}</textarea>
+                <textarea id="editEventFullDescription" class="form-input" rows="6" placeholder="Write detailed notes about this event...">${this.escapeHTML(event.fullDescription || '')}</textarea>
             </div>
         `;
 
@@ -2418,11 +2549,19 @@ const App = {
         if (this.currentEditingEventId === null) return;
 
         const event = this.storyData.events.find(e => e.id === this.currentEditingEventId);
-        event.title = document.getElementById('editEventTitle').value.trim();
-        event.period = document.getElementById('editEventPeriod').value.trim();
-        event.beat = document.getElementById('editEventBeat').value || null;
-        event.description = document.getElementById('editEventDescription').value.trim();
-        event.fullDescription = document.getElementById('editEventFullDescription').value.trim();
+        if (!event) return;
+
+        const locPreset = document.getElementById('editEventLocationPreset')?.value ?? '';
+        const locCustom = document.getElementById('editEventLocationCustom')?.value ?? '';
+        const patch = {
+            title: document.getElementById('editEventTitle').value.trim(),
+            period: document.getElementById('editEventPeriod').value.trim(),
+            beat: document.getElementById('editEventBeat').value || null,
+            description: document.getElementById('editEventDescription').value.trim(),
+            fullDescription: document.getElementById('editEventFullDescription').value.trim(),
+            location: joinTimelineLocation(locPreset, locCustom)
+        };
+        Object.assign(event, updateTimelineEvent(event, patch));
 
         this.save();
         this.closeEventEditor();
@@ -2435,6 +2574,10 @@ const App = {
     renderTimelineWithCircle() {
         const circleContainer = document.getElementById('eventsOnCircle');
         const timelineContainer = document.getElementById('timelineContainer');
+        if (!circleContainer || !timelineContainer) {
+            this.renderGhostBorderInteractiveMap();
+            return;
+        }
 
         const beatPositions = {
             '1': 45, '2': 315, '3': 270, '4': 225,
@@ -2458,7 +2601,7 @@ const App = {
                     .map(id => this.storyData.characters.find(c => c.id === id)?.name)
                     .filter(Boolean)
                     .join(' ');
-                const blob = `${ev.title || ''} ${ev.period || ''} ${ev.description || ''} ${ev.fullDescription || ''} ${involvedNames}`;
+                const blob = `${ev.title || ''} ${ev.period || ''} ${ev.location || ''} ${ev.description || ''} ${ev.fullDescription || ''} ${involvedNames}`;
                 return blob.toLowerCase().includes(q);
             });
         const eventsWithBeat = sortedEvents.filter(e => e.beat);
@@ -2509,12 +2652,17 @@ const App = {
                                     this.inlineEdit.kind === 'event' && this.inlineEdit.id === event.id && this.inlineEdit.field === 'title'
                                         ? `<input class="form-input inline-edit-input" style="flex: 1; min-width: 220px; margin:0; padding:0.45rem 0.65rem;" value="${this.escapeHTML(this.inlineEdit.value)}" oninput="App.onInlineEditInput(this.value)" onkeydown="App.onInlineEditKeydown(event)" onblur="App.commitInlineEdit()">`
                                         : `<span style="font-weight:900; text-decoration: underline; text-underline-offset: 2px; cursor:text; color:#1d4ed8;" onclick="App.startInlineEdit('event', ${event.id}, 'title', '${this.escapeHTML(event.title)}')" title="Click to rename">${this.escapeHTML(event.title)}</span>
-                                           ${event.isCanon ? this.renderCanonBadge('timeline', event.id) : ''}`
+                                           ${event.isCanon ? this.renderCanonBadge('timeline', event.id) : this.renderDraftTag()}`
                                 }
                                 <button class="topbar-ghost" style="padding:0.35rem 0.6rem; font-size:0.8rem;" onclick="App.openEventEditor(${event.id})" title="Open full editor">Details</button>
                             </div>
-                            <div class="text-sm text-gray-600">
+                            <div class="text-sm text-zinc-400">
                                 ${this.escapeHTML(event.period || '')}
+                                ${
+                                    event.location
+                                        ? ` · <span class="text-violet-300/90">${this.escapeHTML(event.location)}</span>`
+                                        : ''
+                                }
                                 ${
                                     this.inlineEdit.kind === 'event' && this.inlineEdit.id === event.id && this.inlineEdit.field === 'beat'
                                         ? `<select class="form-input inline-edit-input" style="display:inline-block; width:auto; margin:0 0 0 0.4rem; padding:0.35rem 0.55rem;" oninput="App.onInlineEditInput(this.value)" onkeydown="App.onInlineEditKeydown(event)" onblur="App.commitInlineEdit()">
@@ -2531,7 +2679,7 @@ const App = {
                                         : `${event.beat ? ` • <span style="cursor:text; text-decoration: underline; text-underline-offset: 2px;" onclick="App.startInlineEdit('event', ${event.id}, 'beat', '${this.escapeHTML(event.beat)}')" title="Click to change beat">Story Beat ${this.escapeHTML(event.beat)}</span>` : ` • <span style="cursor:text; text-decoration: underline; text-underline-offset: 2px;" onclick="App.startInlineEdit('event', ${event.id}, 'beat', '')" title="Click to assign beat">Assign beat</span>`}`
                                 }
                             </div>
-                            ${event.description ? `<div class="text-sm text-gray-700 mt-1">${event.description}</div>` : ''}
+                            ${event.description ? `<div class="text-sm text-zinc-300 mt-1">${event.description}</div>` : ''}
                             ${
                                 Array.isArray(event.involvedCharacterIds) && event.involvedCharacterIds.length
                                     ? `<div class="mb-2" style="margin-top:0.5rem;">
@@ -2549,7 +2697,7 @@ const App = {
                                     </div>`
                                     : ''
                             }
-                            ${event.fullDescription ? `<div class="text-sm text-gray-600 mt-2 italic">${event.fullDescription.substring(0, 100)}${event.fullDescription.length > 100 ? '...' : ''}</div>` : ''}
+                            ${event.fullDescription ? `<div class="text-sm text-zinc-400 mt-2 italic">${event.fullDescription.substring(0, 100)}${event.fullDescription.length > 100 ? '...' : ''}</div>` : ''}
                         </div>
                         <button class="delete-btn" onclick="App.deleteEvent(${event.id}); event.stopPropagation();">Delete</button>
                     </div>
@@ -2558,6 +2706,7 @@ const App = {
         `;
 
         this.initTimelineDragAndDrop();
+        this.renderGhostBorderInteractiveMap();
     },
 
     onTimelineEventDragOver(event) {
@@ -2656,9 +2805,10 @@ const App = {
     renderPlot() {
         const container = document.getElementById('plotContainer');
         container.innerHTML = this.storyData.plot.map((section, idx) => `
-            <div class="card">
-                <h3>${section.act}</h3>
-                <p class="text-gray-700">${section.content}</p>
+            <div class="mb-4 rounded-2xl border border-zinc-200/50 bg-white/80 p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/70">
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">Act</div>
+                <h3 class="mt-1 text-lg font-black tracking-tight text-zinc-900 dark:text-zinc-50">${section.act}</h3>
+                <p class="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">${section.content}</p>
             </div>
         `).join('');
     },
@@ -2669,9 +2819,10 @@ const App = {
     renderPolitics() {
         const container = document.getElementById('politicsContainer');
         container.innerHTML = this.storyData.politics.map((section, idx) => `
-            <div class="card">
-                <h3>${section.section}</h3>
-                <p class="text-gray-700">${section.content}</p>
+            <div class="mb-4 rounded-2xl border border-zinc-200/50 bg-white/80 p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/70">
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">Politics</div>
+                <h3 class="mt-1 text-lg font-black tracking-tight text-zinc-900 dark:text-zinc-50">${section.section}</h3>
+                <p class="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">${section.content}</p>
             </div>
         `).join('');
     },
@@ -2830,19 +2981,24 @@ const App = {
         });
 
         container.innerHTML = Object.entries(grouped).map(([category, items]) => `
-            <div class="card">
-                <h3>${category}</h3>
+            <div class="mb-4 rounded-2xl border border-zinc-200/50 bg-white/80 p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/70">
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">Category</div>
+                <h3 class="mt-1 text-lg font-black tracking-tight text-zinc-900 dark:text-zinc-50">${category}</h3>
+                <div class="mt-3 space-y-2">
                 ${items.map(item => `
-                    <div class="work-item">
-                        <input type="checkbox" ${item.completed ? 'checked' : ''} onchange="App.toggleWorkItem(${item.id})">
-                        <span style="flex: 1; ${item.completed ? 'text-decoration: line-through; color: #999;' : ''}">${item.title}</span>
-                        ${item.isCanon ? this.renderCanonBadge('workItem', item.id) : ''}
-                        <button style="background:#2563eb; margin-right:0.4rem;" onclick="App.editWorkItem(${item.id})">Edit</button>
-                        <button style="background:#7c3aed; margin-right:0.4rem;" onclick="App.runDeepResearchWorkItem(${item.id})">Deep Research Agent</button>
-                        <button style="background:#4b5563; margin-right:0.4rem;" onclick="App.openWebResearch(${item.id})">Web Search</button>
-                        <button class="delete-btn" onclick="App.deleteWorkItem(${item.id})">Delete</button>
+                    <div class="flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200/50 bg-zinc-50/60 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950/35">
+                        <input class="h-4 w-4 rounded border-zinc-300 text-indigo-500 focus:ring-indigo-500/40 dark:border-zinc-700 dark:bg-zinc-900" type="checkbox" ${item.completed ? 'checked' : ''} onchange="App.toggleWorkItem(${item.id})">
+                        <span class="min-w-[160px] flex-1 text-sm font-semibold ${item.completed ? 'text-zinc-500 line-through' : 'text-zinc-100'}">${item.title}</span>
+                        <div class="flex flex-wrap items-center gap-2">
+                            ${item.isCanon ? this.renderCanonBadge('workItem', item.id) : this.renderDraftTag()}
+                            <button class="rounded-lg bg-gradient-to-r from-indigo-500 to-violet-600 px-3 py-1.5 text-[11px] font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.editWorkItem(${item.id})">Edit</button>
+                            <button class="rounded-lg border border-violet-500/35 bg-violet-600/15 px-3 py-1.5 text-[11px] font-extrabold text-violet-100 hover:bg-violet-600/20" onclick="App.runDeepResearchWorkItem(${item.id})">Deep research</button>
+                            <button class="rounded-lg border border-zinc-200/60 bg-white/70 px-3 py-1.5 text-[11px] font-extrabold text-zinc-900 hover:bg-white dark:border-zinc-800 dark:bg-zinc-950/50 dark:text-zinc-100 dark:hover:bg-zinc-950" onclick="App.openWebResearch(${item.id})">Web</button>
+                            <button class="delete-btn rounded-lg px-3 py-1.5 text-[11px] font-extrabold" onclick="App.deleteWorkItem(${item.id})">Delete</button>
+                        </div>
                     </div>
                 `).join('')}
+                </div>
             </div>
         `).join('');
     },
@@ -2869,8 +3025,142 @@ const App = {
         const percentage = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
         document.getElementById('task-count').textContent = totalTasks - completedTasks;
-        document.getElementById('completion-percentage').textContent = percentage + '%';
-        document.getElementById('completion-bar').style.width = percentage + '%';
+        const pctVal = document.getElementById('completion-percentage-value');
+        if (pctVal) pctVal.textContent = String(percentage);
+        const bar = document.getElementById('completion-bar');
+        if (bar) bar.style.width = percentage + '%';
+
+        const ring = document.getElementById('momentumRing');
+        if (ring) {
+            const radius = 54;
+            const circumference = 2 * Math.PI * radius;
+            ring.setAttribute('stroke-dasharray', String(circumference));
+            const clamped = Math.max(0, Math.min(100, percentage));
+            const offset = circumference * (1 - clamped / 100);
+            ring.setAttribute('stroke-dashoffset', String(offset));
+        }
+
+        this.renderStoryLocationsOverview();
+    },
+
+    /**
+     * Dashboard: horizontal mini timeline from current story events.
+     */
+    renderDashboardMiniTimeline() {
+        const strip = document.getElementById('dashboardMiniTimelineStrip');
+        if (!strip) return;
+
+        const events = Array.isArray(this.storyData.events) ? this.storyData.events : [];
+        const sorted = [...events].sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0));
+        const charById = new Map((this.storyData.characters || []).map(c => [c.id, c]));
+
+        const initials = (name) => {
+            const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+            if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+            const s = parts[0] || '?';
+            return s.slice(0, 2).toUpperCase();
+        };
+
+        const ringClass = (type) => {
+            if (type === 'friendly') return 'border-emerald-400/45 bg-emerald-400/12 text-emerald-400';
+            if (type === 'antagonist') return 'border-rose-500/45 bg-rose-500/12 text-rose-500';
+            return 'border-zinc-500/40 bg-zinc-700/30 text-zinc-400';
+        };
+
+        const summary = (ev) => {
+            const d = String(ev.description || '').trim();
+            if (d) return d.length > 96 ? `${d.slice(0, 96)}…` : d;
+            const fd = String(ev.fullDescription || '').trim();
+            if (fd) return fd.length > 96 ? `${fd.slice(0, 96)}…` : fd;
+            const p = String(ev.period || '').trim();
+            return p || 'No summary yet';
+        };
+
+        if (sorted.length === 0) {
+            strip.innerHTML = `
+                <div class="flex min-w-full flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-700/90 bg-zinc-900 px-8 py-14 text-center shadow-inner shadow-black/30">
+                    <div class="text-base font-black tracking-tight text-zinc-100">No timeline beats yet</div>
+                    <div class="mt-2 max-w-md text-sm leading-relaxed text-zinc-500">Add events from the Timeline tab — they will appear here in story order.</div>
+                    <button type="button" class="dashboard-qa-btn mt-6 rounded-xl bg-violet-600 px-6 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:shadow-[0_0_28px_-4px_rgba(139,92,246,0.55)]" onclick="App.switchTab('timeline')">Go to Timeline</button>
+                </div>
+            `;
+            return;
+        }
+
+        const connector = `
+                <div class="dashboard-mini-connector flex w-5 shrink-0 flex-col items-center justify-center self-center px-0.5" aria-hidden="true">
+                    <div class="h-px w-full rounded-full bg-gradient-to-r from-violet-600/50 via-violet-400/90 to-violet-600/40 shadow-[0_0_12px_rgba(139,92,246,0.45)]"></div>
+                </div>`;
+
+        strip.innerHTML = sorted
+            .map((ev, idx) => {
+            const id = Number(ev.id);
+            const beat = ev.beat != null && ev.beat !== '' ? String(ev.beat) : '—';
+            const title = this.escapeHTML(ev.title || 'Untitled');
+            const sum = this.escapeHTML(summary(ev));
+            const involved = Array.isArray(ev.involvedCharacterIds) ? ev.involvedCharacterIds : [];
+            const faces = involved.slice(0, 5).map(cid => {
+                const c = charById.get(Number(cid));
+                if (!c) return '';
+                const ini = this.escapeHTML(initials(c.name));
+                const rc = ringClass(c.type);
+                return `<span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[11px] font-black ${rc} shadow-sm" title="${this.escapeHTML(c.name)}">${ini}</span>`;
+            }).join('');
+            const more = involved.length > 5
+                ? `<span class="inline-flex h-9 min-w-[2.25rem] shrink-0 items-center justify-center rounded-full border border-violet-500/40 bg-violet-950/50 px-1.5 text-[11px] font-black text-violet-100 shadow-sm" title="More characters">+${involved.length - 5}</span>`
+                : '';
+            const canon = ev.isCanon ? this.renderCanonBadge('timeline', id) : '';
+
+            const card = `
+                <div role="button" tabindex="0" class="dashboard-mini-card group relative flex w-[min(100%,280px)] shrink-0 cursor-pointer flex-col rounded-2xl border border-zinc-700/90 bg-zinc-900 p-4 text-left shadow-[0_12px_40px_-12px_rgba(0,0,0,0.75)] ring-1 ring-inset ring-white/[0.04] transition hover:border-violet-500/45 hover:shadow-[0_0_32px_-6px_rgba(139,92,246,0.22)] focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/70"
+                    onclick="App.focusTimelineEvent(${id})"
+                    onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.focusTimelineEvent(${id});}"
+                >
+                    <div class="flex items-start justify-between gap-3">
+                        <span class="inline-flex items-center rounded-lg border border-violet-500/40 bg-violet-600/20 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-violet-200">Beat ${this.escapeHTML(beat)}</span>
+                        <span class="shrink-0 text-right leading-none">${canon}</span>
+                    </div>
+                    <div class="mt-3 line-clamp-2 text-base font-black leading-snug tracking-tight text-zinc-50">${title}</div>
+                    <div class="mt-2 line-clamp-2 text-sm leading-relaxed text-zinc-400">${sum}</div>
+                    <div class="mt-4 flex min-h-[2.25rem] flex-wrap items-center gap-2 border-t border-zinc-800/80 pt-3">
+                        ${faces || '<span class="text-xs font-semibold text-zinc-600">No characters linked</span>'}
+                        ${more}
+                    </div>
+                </div>`;
+            const tail = idx < sorted.length - 1 ? connector : '';
+            return card + tail;
+        })
+            .join('');
+    },
+
+    /**
+     * Open Timeline tab and scroll/highlight a specific event row.
+     */
+    focusTimelineEvent(eventId) {
+        const numId = Number(eventId);
+        if (!Number.isFinite(numId)) return;
+
+        this.switchTab('timeline');
+
+        const tryHighlight = (attempt = 0) => {
+            const row = document.querySelector(`#timelineList .timeline-event[data-event-id="${numId}"]`)
+                || document.querySelector(`.timeline-event[data-event-id="${numId}"]`);
+            if (row) {
+                row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                row.classList.add('timeline-event-spotlight');
+                window.clearTimeout(row._spotlightTimer);
+                row._spotlightTimer = window.setTimeout(() => {
+                    row.classList.remove('timeline-event-spotlight');
+                    row._spotlightTimer = null;
+                }, 2600);
+                return;
+            }
+            if (attempt < 30) {
+                window.setTimeout(() => tryHighlight(attempt + 1), 45);
+            }
+        };
+
+        window.setTimeout(() => tryHighlight(0), 0);
     },
 
     // ============ AI ANALYSIS ============
@@ -2975,7 +3265,7 @@ const App = {
         const modelDiv = document.getElementById('modelList');
         
         if (AIService.availableModels.length === 0) {
-            modelDiv.innerHTML = '<div class="model-item text-gray-500">No models detected. Load a model in your AI platform first.</div>';
+            modelDiv.innerHTML = '<div class="model-item text-zinc-400">No models detected. Load a model in your AI platform first.</div>';
             return;
         }
         
@@ -3053,9 +3343,10 @@ const App = {
      * Build scene prompts from timeline / plot data.
      */
     buildVisualPrompts(source, count, style) {
-        const timelineItems = this.storyData.events.map(e =>
-            `${e.title} (${e.period || 'Unknown period'}) - ${e.description || 'No description'}`
-        );
+        const timelineItems = this.storyData.events.map(e => {
+            const loc = e.location ? ` @ ${e.location}` : '';
+            return `${e.title} (${e.period || 'Unknown period'})${loc} — ${e.description || 'No description'}`;
+        });
         const plotItems = this.storyData.plot.map(p => `${p.act} - ${p.content}`);
         let baseItems = [];
 
@@ -3101,13 +3392,666 @@ const App = {
                     <div class="visual-card">
                         <img src="${item.imageUrl}" alt="Generated scene" class="visual-image">
                         <div class="visual-meta">
-                            <div class="text-sm text-gray-600">${new Date(item.createdAt).toLocaleString()}</div>
+                            <div class="text-sm text-zinc-400">${new Date(item.createdAt).toLocaleString()}</div>
                             <p>${this.escapeHTML(item.prompt)}</p>
                         </div>
                     </div>
                 `).join('')}
             </div>
         `;
+    },
+
+    /**
+     * Predefined map coordinates (viewBox 0 0 1000 640) for timeline location presets.
+     */
+    STORY_WORLD_MAP_BASE: Object.freeze({
+        'Tang Imperial Palace': [502, 198],
+        'Forbidden Garden': [738, 276],
+        'Imperial Market Square': [498, 432],
+        'Time Portal': [218, 312],
+        'Modern City District': [148, 528]
+    }),
+
+    /** Ghost Border static map (Visualizer 1200×620) — pin coordinates. */
+    GHOST_BORDER_LOCATION_COORDS: Object.freeze({
+        'Time Portal': { x: 210, y: 170 },
+        'Disgraced Manor': { x: 395, y: 365 },
+        'Forbidden Garden': { x: 520, y: 240 },
+        'Imperial Market': { x: 710, y: 400 },
+        'Daming Palace': { x: 940, y: 195 },
+        'Grey Dragon Road': { x: 610, y: 355 },
+        'Secret Metropolis': { x: 1045, y: 420 }
+    }),
+
+    GHOST_BORDER_LOCATION_ALIASES: Object.freeze({
+        'time portal cave': 'Time Portal',
+        'imperial market square': 'Imperial Market',
+        'tang imperial palace': 'Daming Palace',
+        'modern city district': 'Secret Metropolis',
+        'forbidden garden': 'Forbidden Garden',
+        'time portal': 'Time Portal',
+        'disgraced manor': 'Disgraced Manor',
+        'grey dragon road': 'Grey Dragon Road',
+        'secret metropolis': 'Secret Metropolis',
+        'daming palace': 'Daming Palace',
+        'imperial market': 'Imperial Market'
+    }),
+
+    hashGhostBorderPoint(ev) {
+        let h = Number(ev?.id) || 0;
+        const s = String(ev?.title || ev?.location || '');
+        for (let i = 0; i < s.length; i += 1) {
+            h = ((h << 5) - h) + s.charCodeAt(i) | 0;
+        }
+        return {
+            x: 200 + (Math.abs(h) % 760),
+            y: 110 + (Math.abs(h >> 10) % 420)
+        };
+    },
+
+    resolveGhostBorderBasePoint(ev) {
+        const raw = String(ev?.location || '').trim();
+        const reg = this.GHOST_BORDER_LOCATION_COORDS;
+        const aliases = this.GHOST_BORDER_LOCATION_ALIASES;
+        if (raw) {
+            const low = raw.toLowerCase();
+            const viaAlias = aliases[low];
+            if (viaAlias && reg[viaAlias]) {
+                return { x: reg[viaAlias].x, y: reg[viaAlias].y };
+            }
+            const direct = Object.keys(reg).find((k) => k.toLowerCase() === low);
+            if (direct) {
+                return { x: reg[direct].x, y: reg[direct].y };
+            }
+            const fuzzy = Object.keys(reg).find((k) =>
+                low.includes(k.toLowerCase()) || k.toLowerCase().includes(low));
+            if (fuzzy) {
+                return { x: reg[fuzzy].x, y: reg[fuzzy].y };
+            }
+        }
+        return this.hashGhostBorderPoint(ev);
+    },
+
+    ghostBorderStoryJump(prevEv, nextEv) {
+        const A = String(prevEv?.location || '').toLowerCase();
+        const B = String(nextEv?.location || '').toLowerCase();
+        return (A.includes('portal') && (B.includes('modern') || B.includes('metropolis') || B.includes('secret')))
+            || ((A.includes('modern') || A.includes('metropolis') || A.includes('secret'))
+                && (B.includes('palace') || B.includes('daming') || B.includes('tang')));
+    },
+
+    buildGhostBorderSmoothPath(points) {
+        if (!points || points.length < 2) return '';
+        let d = `M ${points[0].x} ${points[0].y}`;
+        for (let i = 1; i < points.length; i += 1) {
+            const p = points[i];
+            const prev = points[i - 1];
+            const mx = (prev.x + p.x) / 2;
+            const my = (prev.y + p.y) / 2;
+            d += ` Q ${mx} ${my} ${p.x} ${p.y}`;
+        }
+        return d;
+    },
+
+    /**
+     * Ghost Border map overlay: pins from timeline `location`, purple story path, jump dashes, in-map legend.
+     */
+    renderGhostBorderInteractiveMap() {
+        const overlay = document.getElementById('ghostBorderMapOverlay');
+        if (!overlay) return;
+
+        const events = [...(Array.isArray(this.storyData?.events) ? this.storyData.events : [])]
+            .sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0) || (Number(a?.id) || 0) - (Number(b?.id) || 0));
+
+        const stackAt = new Map();
+        const pinPlacements = [];
+        const pathPoints = [];
+
+        events.forEach((ev) => {
+            const base = this.resolveGhostBorderBasePoint(ev);
+            const ck = `${Math.round(base.x)}|${Math.round(base.y)}`;
+            const n = stackAt.get(ck) || 0;
+            stackAt.set(ck, n + 1);
+            const ang = ((n * 42) - 90) * Math.PI / 180;
+            const rad = 12 + n * 18;
+            const x = Math.round(base.x + Math.cos(ang) * rad);
+            const y = Math.round(base.y + Math.sin(ang) * rad);
+            pathPoints.push({ x, y, ev });
+            if (String(ev.location || '').trim()) {
+                pinPlacements.push({ x, y, ev });
+            }
+        });
+
+        const pathD = pathPoints.length >= 2 ? this.buildGhostBorderSmoothPath(pathPoints) : '';
+
+        const jumpLines = [];
+        for (let i = 1; i < pathPoints.length; i += 1) {
+            if (this.ghostBorderStoryJump(pathPoints[i - 1].ev, pathPoints[i].ev)) {
+                jumpLines.push({
+                    x1: pathPoints[i - 1].x,
+                    y1: pathPoints[i - 1].y,
+                    x2: pathPoints[i].x,
+                    y2: pathPoints[i].y
+                });
+            }
+        }
+
+        const pathSvg = pathD
+            ? `<path d="${pathD}" fill="none" stroke="rgba(167,139,250,0.35)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+               <path d="${pathD}" fill="none" stroke="rgba(196,181,253,0.95)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#ghostBorderRouteGlow)" pointer-events="none"/>`
+            : '';
+
+        const jumpsSvg = jumpLines.map((ln) =>
+            `<line x1="${ln.x1}" y1="${ln.y1}" x2="${ln.x2}" y2="${ln.y2}" stroke="rgba(167,139,250,0.92)" stroke-width="3.2" stroke-dasharray="10 14" stroke-linecap="round" pointer-events="none"/>`
+        ).join('');
+
+        const pinsSvg = pinPlacements.map(({ x, y, ev }) => {
+            const nid = Number(ev.id);
+            const beat = ev.beat != null && ev.beat !== '' ? String(ev.beat) : '—';
+            const title = String(ev.title || 'Untitled').trim();
+            const short = title.length > 44 ? `${title.slice(0, 44)}…` : title;
+            const tip = `Beat ${beat} — ${short}`;
+            const shield = ev.isCanon
+                ? '<g transform="translate(11,-19)" aria-label="Canon"><path d="M0 4.5 L7.5 0 L15 4.5 L12 17 L3 17 Z" fill="#fbbf24" stroke="#78350f" stroke-width="0.85"/></g>'
+                : '';
+            return `
+            <g class="ghost-border-map-pin" transform="translate(${x},${y})" role="button" tabindex="0"
+               onclick="App.focusTimelineEvent(${nid})"
+               onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.focusTimelineEvent(${nid});}">
+              <title>${this.escapeHTML(tip)}</title>
+              <circle r="26" fill="rgba(251,191,36,0.2)" filter="url(#ghostBorderPinGlow)" />
+              <circle r="16" fill="#0a0810" stroke="#fbbf24" stroke-width="2.6" />
+              <circle r="6.5" fill="#6d28d9" stroke="#ddd6fe" stroke-width="0.8" />
+              <text text-anchor="middle" y="4.5" fill="#fffbeb" font-size="10.5" font-family="system-ui,-apple-system,sans-serif" font-weight="800">${this.escapeHTML(beat)}</text>
+              ${shield}
+            </g>`;
+        }).join('');
+
+        const legend = `
+        <g id="ghostBorderMapLegend" transform="translate(788, 405)" pointer-events="none">
+          <rect width="396" height="218" rx="12" fill="rgba(5,5,8,0.88)" stroke="rgba(139,92,246,0.5)" stroke-width="1" />
+          <text x="18" y="30" fill="#f5e9d0" font-size="13" font-weight="800" font-family="system-ui,sans-serif">Legend</text>
+          <circle cx="22" cy="54" r="8" fill="#6d28d9" stroke="#fbbf24" stroke-width="2.2" />
+          <text x="38" y="58" fill="#cbd5e1" font-size="11.5" font-family="system-ui,sans-serif">Gold pin = canon event</text>
+          <line x1="14" y1="78" x2="38" y2="78" stroke="#c4b5fd" stroke-width="4" stroke-linecap="round" />
+          <text x="44" y="82" fill="#cbd5e1" font-size="11.5" font-family="system-ui,sans-serif">Purple line = story progression</text>
+          <line x1="14" y1="100" x2="38" y2="100" stroke="rgba(167,139,250,0.95)" stroke-width="2.8" stroke-dasharray="8 10" stroke-linecap="round" />
+          <text x="44" y="104" fill="#94a3b8" font-size="11.5" font-family="system-ui,sans-serif">Dashed purple = time-travel jumps</text>
+          <text x="18" y="132" fill="#78716c" font-size="10" font-family="system-ui,sans-serif">Gold shield on pin = isCanon. Pins only when a Timeline location is set. Click pin → Timeline.</text>
+        </g>`;
+
+        overlay.innerHTML = `${pathSvg}${jumpsSvg}${pinsSvg}${legend}`;
+    },
+
+    /**
+     * Rich, map-specific prompt for Grok Imagine (timeline + locations); built in AIService.
+     */
+    buildStoryWorldMapGrokPrompt() {
+        return AIService.buildStoryWorldMapGrokPrompt(this.storyData);
+    },
+
+    syncStoryWorldMapGrokPromptUI() {
+        const text = this.buildStoryWorldMapGrokPrompt();
+        const modalTa = document.getElementById('storyWorldMapGrokModalPrompt');
+        if (modalTa && !modalTa.dataset.aiPending) {
+            modalTa.value = text;
+        }
+    },
+
+    /**
+     * Open Grok Imagine modal and fill prompt via text AI (AIService), with fallback to built-in draft.
+     */
+    async openStoryWorldMapGrokModal() {
+        const modal = document.getElementById('storyWorldMapGrokModal');
+        const ta = document.getElementById('storyWorldMapGrokModalPrompt');
+        const statusEl = document.getElementById('storyWorldMapGrokModalStatus');
+        const actions = document.getElementById('storyWorldMapGrokModalActions');
+        modal?.classList.add('active');
+        if (ta) {
+            ta.dataset.aiPending = '1';
+            ta.value = 'Generating a detailed, ready-to-copy prompt with your text AI (LM Studio / Ollama)…\n\nIf this takes too long, close and try again after Test Connection in AI Settings.';
+        }
+        if (statusEl) {
+            statusEl.classList.remove('hidden', 'text-emerald-400/90', 'text-amber-200');
+            statusEl.textContent = 'Calling AIService…';
+        }
+        if (actions) actions.classList.add('pointer-events-none', 'opacity-50');
+
+        try {
+            const text = await AIService.generateStoryWorldMapGrokPromptDetailed(this.storyData);
+            if (ta) ta.value = text;
+            if (statusEl) {
+                statusEl.textContent = 'Ready — copy and paste into Grok Imagine.';
+                statusEl.classList.remove('text-amber-200');
+                statusEl.classList.add('text-emerald-400/90');
+            }
+        } catch (err) {
+            const fb = this.buildStoryWorldMapGrokPrompt();
+            if (ta) ta.value = fb;
+            if (statusEl) {
+                statusEl.textContent = `AI unavailable — showing built-in draft. (${String(err?.message || err)})`;
+                statusEl.classList.add('text-amber-200');
+            }
+        } finally {
+            if (ta) delete ta.dataset.aiPending;
+            if (actions) actions.classList.remove('pointer-events-none', 'opacity-50');
+        }
+    },
+
+    closeStoryWorldMapGrokModal() {
+        document.getElementById('storyWorldMapGrokModal')?.classList.remove('active');
+        const st = document.getElementById('storyWorldMapGrokModalStatus');
+        if (st) {
+            st.classList.add('hidden');
+            st.textContent = '';
+            st.classList.remove('text-emerald-400/90', 'text-amber-200');
+        }
+    },
+
+    async copyStoryWorldMapGrokModalPrompt() {
+        const ta = document.getElementById('storyWorldMapGrokModalPrompt');
+        const text = (ta?.value || this.buildStoryWorldMapGrokPrompt()).trim();
+        const status = document.getElementById('storyWorldMapAiStatus');
+        try {
+            await navigator.clipboard.writeText(text);
+            if (status) status.innerHTML = '<div class="ai-status connected">✅ Prompt copied — paste into Grok Imagine.</div>';
+        } catch (err) {
+            try {
+                if (ta) {
+                    ta.focus();
+                    ta.select();
+                    document.execCommand('copy');
+                }
+                if (status) status.innerHTML = '<div class="ai-status connected">✅ Copied (browser fallback).</div>';
+            } catch (err2) {
+                if (status) {
+                    status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(err2.message || err.message || 'Could not copy')}</div>`;
+                }
+            }
+        }
+    },
+
+    ensureStoryWorldMapGallery() {
+        if (!this.storyData.storyWorldMapGallery || typeof this.storyData.storyWorldMapGallery !== 'object') {
+            this.storyData.storyWorldMapGallery = { version: 1, items: [] };
+        }
+        if (!Array.isArray(this.storyData.storyWorldMapGallery.items)) {
+            this.storyData.storyWorldMapGallery.items = [];
+        }
+    },
+
+    renderStoryWorldMapGallery() {
+        const el = document.getElementById('storyWorldMapGallery');
+        if (!el) return;
+        this.ensureStoryWorldMapGallery();
+        const items = [...this.storyData.storyWorldMapGallery.items].sort((a, b) => {
+            const ta = new Date(a.createdAt || 0).getTime();
+            const tb = new Date(b.createdAt || 0).getTime();
+            return tb - ta;
+        });
+        if (items.length === 0) {
+            el.innerHTML = `
+                <div class="rounded-xl border border-dashed border-zinc-700/60 bg-zinc-950/40 px-4 py-10 text-center text-xs text-zinc-500">
+                    No saved map images yet. Use <strong class="text-zinc-300">Fetch map via image API</strong> above — results persist with your story.
+                </div>`;
+            return;
+        }
+        el.innerHTML = `
+            <div class="story-world-map-gallery-grid grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+                ${items.map((it) => {
+            const url = this.escapeHTML(String(it.imageUrl || ''));
+            const when = it.createdAt ? this.escapeHTML(new Date(it.createdAt).toLocaleString()) : '';
+            const id = Number(it.id);
+            return `
+                    <figure class="m-0 overflow-hidden rounded-xl border border-zinc-700/80 bg-zinc-950/60 ring-1 ring-inset ring-violet-500/10">
+                        <a href="${url}" target="_blank" rel="noopener noreferrer" class="block">
+                            <img src="${url}" alt="Saved world map" class="h-32 w-full object-cover sm:h-36" loading="lazy" />
+                        </a>
+                        <figcaption class="border-t border-zinc-800/90 px-2 py-1.5 text-[10px] font-semibold text-zinc-500">${when}</figcaption>
+                    </figure>`;
+        }).join('')}
+            </div>`;
+    },
+
+    async copyStoryWorldMapGrokPrompt() {
+        this.syncStoryWorldMapGrokPromptUI();
+        const text = this.buildStoryWorldMapGrokPrompt();
+        const status = document.getElementById('storyWorldMapAiStatus');
+        try {
+            await navigator.clipboard.writeText(text);
+            if (status) {
+                status.innerHTML = '<div class="ai-status connected">✅ Prompt copied for Grok Imagine.</div>';
+            }
+        } catch (err) {
+            try {
+                const ta = document.getElementById('storyWorldMapGrokModalPrompt');
+                if (ta) {
+                    ta.value = text;
+                    ta.focus();
+                    ta.select();
+                    document.execCommand('copy');
+                }
+                if (status) {
+                    status.innerHTML = '<div class="ai-status connected">✅ Prompt copied (browser fallback).</div>';
+                }
+            } catch (err2) {
+                if (status) {
+                    status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(err2.message || err.message || 'Could not copy')}</div>`;
+                }
+            }
+        }
+    },
+
+    /**
+     * Build HTML for Story Locations Overview (Visualizer + Dashboard after Story Momentum).
+     */
+    buildStoryLocationsOverviewHTML() {
+        const events = [...(Array.isArray(this.storyData.events) ? this.storyData.events : [])];
+        const total = events.length;
+
+        if (total === 0) {
+            return `
+                <div class="rounded-2xl border border-dashed border-zinc-700/80 bg-zinc-950/60 px-8 py-16 text-center shadow-inner shadow-black/20">
+                    <p class="m-0 text-base font-semibold text-zinc-300">No timeline events yet</p>
+                    <p class="mx-auto mt-3 max-w-md text-sm leading-relaxed text-zinc-500">Add beats on the <strong class="text-zinc-200">Timeline</strong> tab. They will show up here grouped by location.</p>
+                    <button type="button" class="mt-8 rounded-xl bg-violet-600 px-6 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500" onclick="App.switchTab('timeline')">Go to Timeline</button>
+                </div>`;
+        }
+
+        const hasAnyLocation = events.some((e) => String(e.location || '').trim());
+        if (!hasAnyLocation) {
+            return `
+                <div class="rounded-2xl border border-dashed border-violet-500/25 bg-zinc-950/70 px-8 py-16 text-center shadow-inner shadow-violet-950/20">
+                    <p class="m-0 text-base font-semibold text-zinc-200">No locations set yet</p>
+                    <p class="mx-auto mt-3 max-w-md text-sm leading-relaxed text-zinc-500">You have <strong class="text-zinc-300">${total}</strong> timeline event(s) without a place. Open each event on the <strong class="text-zinc-300">Timeline</strong> tab and pick a location (or a custom one).</p>
+                    <button type="button" class="mt-8 rounded-xl bg-violet-600 px-6 py-3 text-sm font-extrabold text-white shadow-lg shadow-violet-950/40 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500" onclick="App.switchTab('timeline')">Set locations on Timeline</button>
+                </div>`;
+        }
+
+        const byLoc = new Map();
+        events.forEach((e) => {
+            const raw = String(e.location || '').trim();
+            const key = raw || '__none__';
+            if (!byLoc.has(key)) byLoc.set(key, []);
+            byLoc.get(key).push(e);
+        });
+
+        const groups = [...byLoc.entries()].map(([key, evs]) => {
+            const sorted = [...evs].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+            const minOrder = sorted.length ? Math.min(...sorted.map((x) => x.order ?? 0)) : 0;
+            const label = key === '__none__' ? 'Unspecified location' : key;
+            const canonCount = sorted.filter((e) => e.isCanon).length;
+            return { key, label, events: sorted, minOrder, count: sorted.length, canonCount };
+        });
+        groups.sort((a, b) => a.minOrder - b.minOrder || a.label.localeCompare(b.label));
+
+        const sharePct = (n) => Math.round((n / total) * 100);
+
+        const cards = groups.map((g) => {
+            const pct = sharePct(g.count);
+            const widthPct = Math.min(100, Math.max(0, (g.count / total) * 100));
+            const canonBadge = g.canonCount > 0
+                ? `<span class="inline-flex shrink-0 items-center rounded-full border border-amber-400/45 bg-amber-400/10 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[0.12em] text-amber-200/95">${g.canonCount} canon</span>`
+                : '';
+
+            const beats = g.events.map((e) => {
+                const nid = Number(e.id);
+                const b = e.beat != null && e.beat !== '' ? String(e.beat) : '';
+                const title = this.escapeHTML(String(e.title || 'Untitled'));
+                const lineLabel = b ? `Beat ${this.escapeHTML(b)} — ${title}` : `No beat — ${title}`;
+                const draftHint = e.isCanon
+                    ? ''
+                    : '<span class="ml-2 text-[10px] font-bold uppercase tracking-wide text-violet-400/80">Draft</span>';
+                return `
+                    <li class="m-0 list-none">
+                        <button type="button"
+                            class="group flex w-full items-center justify-between gap-3 rounded-xl border border-zinc-800/80 bg-zinc-950/50 px-4 py-3 text-left text-sm text-zinc-200 ring-1 ring-inset ring-white/[0.02] transition hover:border-violet-500/40 hover:bg-violet-500/[0.08] hover:shadow-[0_0_24px_-8px_rgba(139,92,246,0.35)]"
+                            onclick="App.focusTimelineEvent(${nid})">
+                            <span class="min-w-0 flex-1 font-medium leading-snug tracking-tight text-zinc-100">${lineLabel}${draftHint}</span>
+                            <span class="shrink-0 text-[10px] font-extrabold uppercase tracking-wider text-violet-400/0 transition group-hover:text-violet-300">Open →</span>
+                        </button>
+                    </li>`;
+            }).join('');
+
+            return `
+                <article class="flex min-h-0 flex-col rounded-2xl border border-zinc-800/90 bg-zinc-900 p-6 shadow-[0_20px_50px_-20px_rgba(0,0,0,0.55)] ring-1 ring-inset ring-violet-500/[0.06]">
+                    <div class="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-800/80 pb-5">
+                        <div class="min-w-0 flex-1">
+                            <h3 class="m-0 font-serif text-2xl font-normal leading-tight tracking-wide text-zinc-50 sm:text-[1.65rem]">${this.escapeHTML(g.label)}</h3>
+                            <p class="mt-2 text-sm font-semibold text-violet-300/90">${g.count} event${g.count === 1 ? '' : 's'} here</p>
+                        </div>
+                        ${canonBadge}
+                    </div>
+                    <div class="mt-5">
+                        <div class="flex items-center justify-between gap-2 text-[10px] font-extrabold uppercase tracking-[0.14em] text-zinc-500">
+                            <span>Story share</span>
+                            <span class="text-violet-400/90">${pct}%</span>
+                        </div>
+                        <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800" role="progressbar" aria-valuenow="${g.count}" aria-valuemin="0" aria-valuemax="${total}" aria-label="Share of timeline at this location">
+                            <div class="h-full min-w-[4px] rounded-full bg-gradient-to-r from-violet-500 via-fuchsia-500 to-violet-400" style="width: ${widthPct}%"></div>
+                        </div>
+                    </div>
+                    <ul class="m-0 mt-6 flex flex-1 flex-col gap-2 p-0">${beats}</ul>
+                </article>`;
+        }).join('');
+
+        return `<div class="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3">${cards}</div>`;
+    },
+
+    /**
+     * Dashboard (after Story Momentum) + Visualizer: location cards; updates whenever `render()` or `updateDashboard()` runs.
+     */
+    renderStoryLocationsOverview() {
+        const html = this.buildStoryLocationsOverviewHTML();
+        ['storyLocationsOverview', 'storyLocationsOverviewDashboard'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = html;
+        });
+    },
+
+    /**
+     * Redraw the SVG story world map from current timeline events.
+     */
+    renderStoryWorldMap() {
+        try {
+        const mount = document.getElementById('storyWorldMapMount');
+        if (!mount) {
+            this.syncStoryWorldMapGrokPromptUI();
+            this.renderStoryWorldMapGallery();
+            return;
+        }
+
+        const events = [...(Array.isArray(this.storyData.events) ? this.storyData.events : [])]
+            .sort((a, b) => (a?.order ?? 0) - (b?.order ?? 0));
+
+        if (events.length === 0) {
+            mount.innerHTML = `
+                <div class="rounded-xl border border-dashed border-zinc-700/90 bg-zinc-950/70 px-6 py-14 text-center text-sm text-zinc-500">
+                    No timeline events yet. Add beats on the <strong class="text-zinc-300">Timeline</strong> tab — pins appear here by location and story order.
+                </div>`;
+            this.syncStoryWorldMapGrokPromptUI();
+            this.renderStoryWorldMapGallery();
+            return;
+        }
+
+        const LOCATION_BASE = this.STORY_WORLD_MAP_BASE;
+        const hashLoc = (str) => {
+            let h = 0;
+            const s = String(str || '');
+            for (let i = 0; i < s.length; i += 1) {
+                h = ((h << 5) - h) + s.charCodeAt(i) | 0;
+            }
+            return Math.abs(h);
+        };
+        const coordKey = (xy) => `${Math.round(xy[0])}|${Math.round(xy[1])}`;
+        const stackCounts = new Map();
+
+        const placements = events.map((ev) => {
+            const loc = String(ev.location || '').trim();
+            let base = LOCATION_BASE[loc];
+            if (!base) {
+                const h = hashLoc(loc || `ev-${ev.id}`);
+                base = [340 + (h % 320), 230 + ((h >> 4) % 180)];
+            }
+            const k = coordKey(base);
+            const n = stackCounts.get(k) || 0;
+            stackCounts.set(k, n + 1);
+            const ang = ((n * 48) - 90) * Math.PI / 180;
+            const rad = 12 + n * 20;
+            const x = Math.round(base[0] + Math.cos(ang) * rad);
+            const y = Math.round(base[1] + Math.sin(ang) * rad);
+            return { ev, x, y };
+        });
+
+        const routeD = placements.length >= 2
+            ? placements.map((p, j) => `${j === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
+            : '';
+
+        /** Top-down symbolic anchors (palace, garden, market, portal, modern district). */
+        const regionIconsSvg = `
+  <g class="story-map-region-icons" pointer-events="none" opacity="0.9">
+    <g transform="translate(502,198)" aria-label="Palace">
+      <rect x="-52" y="-32" width="104" height="78" rx="5" fill="rgba(24,24,27,0.58)" stroke="rgba(251,191,36,0.42)" stroke-width="1.5"/>
+      <rect x="-34" y="-14" width="68" height="44" rx="2" fill="none" stroke="rgba(113,113,122,0.45)" stroke-width="0.9"/>
+      <line x1="0" y1="-14" x2="0" y2="30" stroke="rgba(113,113,122,0.35)" stroke-width="0.8"/>
+      <polygon points="0,-54 -46,-32 46,-32" fill="rgba(79,70,229,0.48)" stroke="rgba(196,181,253,0.55)" stroke-width="1.2"/>
+      <rect x="-8" y="-46" width="16" height="10" rx="1" fill="rgba(251,191,36,0.25)"/>
+    </g>
+    <g transform="translate(738,276)" aria-label="Garden">
+      <ellipse cx="0" cy="0" rx="56" ry="44" fill="rgba(46,16,101,0.2)" stroke="rgba(139,92,246,0.42)" stroke-width="1.3"/>
+      <ellipse cx="6" cy="-10" rx="18" ry="10" fill="rgba(59,130,246,0.22)" stroke="rgba(96,165,250,0.4)" stroke-width="1"/>
+      <circle cx="-24" cy="-6" r="11" fill="rgba(34,197,94,0.16)" stroke="rgba(74,222,128,0.38)" stroke-width="1"/>
+      <circle cx="22" cy="8" r="13" fill="rgba(34,197,94,0.14)" stroke="rgba(74,222,128,0.32)" stroke-width="1"/>
+      <circle cx="-6" cy="22" r="10" fill="rgba(34,197,94,0.18)" stroke="rgba(74,222,128,0.36)" stroke-width="1"/>
+      <path d="M-12,-28 L-4,-36 L4,-28 L12,-36" fill="none" stroke="rgba(167,139,250,0.35)" stroke-width="1.2" stroke-linecap="round"/>
+    </g>
+    <g transform="translate(498,432)" aria-label="Market">
+      <rect x="-76" y="-40" width="152" height="80" rx="12" fill="rgba(24,24,27,0.55)" stroke="rgba(251,191,36,0.26)" stroke-width="1.3"/>
+      <g stroke="rgba(113,113,122,0.4)" stroke-width="0.75">
+        ${[-48, -16, 16, 48].map((dx) => `<line x1="${dx}" y1="-28" x2="${dx}" y2="28"/>`).join('')}
+        ${[-20, 4, 28].map((dy) => `<line x1="-60" y1="${dy}" x2="60" y2="${dy}"/>`).join('')}
+      </g>
+      <rect x="-68" y="-34" width="18" height="10" rx="2" fill="rgba(251,191,36,0.15)"/>
+      <rect x="8" y="8" width="20" height="10" rx="2" fill="rgba(251,191,36,0.12)"/>
+      <rect x="-36" y="12" width="16" height="10" rx="2" fill="rgba(251,191,36,0.14)"/>
+    </g>
+    <g transform="translate(218,312)" aria-label="Portal">
+      <circle r="40" fill="none" stroke="rgba(167,139,250,0.5)" stroke-width="2" stroke-dasharray="7 6"/>
+      <circle r="26" fill="rgba(99,102,241,0.14)" stroke="rgba(196,181,253,0.35)" stroke-width="1.2"/>
+      <path d="M-18,0 A18,18 0 1,1 18,0 A18,18 0 1,1 -18,0" fill="none" stroke="rgba(167,139,250,0.45)" stroke-width="1.5"/>
+    </g>
+    <g transform="translate(148,528)" aria-label="Modern district">
+      <rect x="-44" y="-28" width="88" height="56" rx="4" fill="rgba(39,39,42,0.45)" stroke="rgba(148,163,184,0.35)" stroke-width="1"/>
+      <g fill="rgba(148,163,184,0.25)">
+        <rect x="-36" y="-20" width="10" height="18"/><rect x="-22" y="-12" width="10" height="26"/><rect x="-8" y="-20" width="10" height="20"/>
+        <rect x="6" y="-16" width="10" height="30"/><rect x="20" y="-22" width="10" height="22"/><rect x="34" y="-14" width="8" height="24"/>
+      </g>
+    </g>
+  </g>`;
+
+        const pinsSvg = placements.map(({ ev, x, y }) => {
+            const beat = ev.beat != null && ev.beat !== '' ? String(ev.beat) : '—';
+            const count = Array.isArray(ev.involvedCharacterIds) ? ev.involvedCharacterIds.length : 0;
+            const title = this.escapeHTML(String(ev.title || 'Event'));
+            const nid = Number(ev.id);
+            return `
+            <g class="story-map-pin" transform="translate(${x},${y})" onclick="App.focusTimelineEvent(${nid})" role="button" tabindex="0"
+               onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.focusTimelineEvent(${nid});}">
+                <title>${title}</title>
+                <circle r="28" fill="rgba(251,191,36,0.14)" filter="url(#storyMapPinHalo)"/>
+                <circle r="22" fill="#0f0d14" stroke="#fbbf24" stroke-width="2.5"/>
+                <text text-anchor="middle" y="6" fill="#fde68a" font-size="14" font-family="system-ui, -apple-system, sans-serif" font-weight="800">${this.escapeHTML(beat)}</text>
+                <text text-anchor="middle" y="34" fill="#c4b5fd" font-size="10" font-family="system-ui, -apple-system, sans-serif" font-weight="700">${count}</text>
+            </g>`;
+        }).join('');
+
+        mount.innerHTML = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" preserveAspectRatio="xMidYMid meet" aria-label="Story world map">
+  <defs>
+    <linearGradient id="swmParchment" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#15121f"/>
+      <stop offset="50%" stop-color="#0b090f"/>
+      <stop offset="100%" stop-color="#110f18"/>
+    </linearGradient>
+    <linearGradient id="swmRiver" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="rgba(79,70,229,0.15)"/>
+      <stop offset="50%" stop-color="rgba(139,92,246,0.35)"/>
+      <stop offset="100%" stop-color="rgba(67,56,202,0.2)"/>
+    </linearGradient>
+    <filter id="storyMapRouteGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="storyMapPinHalo" x="-120%" y="-120%" width="340%" height="340%">
+      <feGaussianBlur stdDeviation="5" result="g"/>
+      <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1000" height="640" fill="url(#swmParchment)"/>
+  <g opacity="0.9">
+    <path d="M -30 130 C 200 90 320 210 460 235 S 640 275 800 315 S 1040 380 1060 480" fill="none" stroke="url(#swmRiver)" stroke-width="22" stroke-linecap="round"/>
+    <path d="M -30 130 C 200 90 320 210 460 235 S 640 275 800 315 S 1040 380 1060 480" fill="none" stroke="rgba(196,181,253,0.25)" stroke-width="7"/>
+  </g>
+  <path d="M70 420 L115 310 L165 395 L210 285 L255 430 Z" fill="rgba(39,39,42,0.55)" stroke="rgba(82,82,91,0.6)" stroke-width="1.2"/>
+  <path d="M805 165 L855 75 L905 135 L955 95 L1005 215 L850 195 Z" fill="rgba(30,27,38,0.65)" stroke="rgba(113,113,122,0.5)" stroke-width="1.2"/>
+  <path d="M600 80 L640 40 L700 55 L720 100 L680 130 L620 115 Z" fill="rgba(39,39,42,0.4)" stroke="rgba(82,82,91,0.45)" stroke-width="1"/>
+  ${regionIconsSvg}
+  ${routeD ? `<path d="${routeD}" fill="none" stroke="rgba(167,139,250,0.95)" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" filter="url(#storyMapRouteGlow)" opacity="0.92"/>
+  <path d="${routeD}" fill="none" stroke="rgba(196,181,253,0.35)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>` : ''}
+  ${pinsSvg}
+</svg>`;
+        this.syncStoryWorldMapGrokPromptUI();
+        this.renderStoryWorldMapGallery();
+        } finally {
+            this.renderGhostBorderInteractiveMap();
+        }
+    },
+
+    refreshStoryWorldMap() {
+        const wrap = document.getElementById('ghostBorderStoryMapWrap');
+        if (wrap) {
+            wrap.classList.add('ring-violet-500/40');
+            window.setTimeout(() => wrap.classList.remove('ring-violet-500/40'), 400);
+        }
+        this.renderStoryWorldMap();
+    },
+
+    /**
+     * Generate a single AI map image (configure Grok Imagine / OpenAI-compatible image API in AI Settings).
+     */
+    async generateStoryWorldMapAI() {
+        const status = document.getElementById('storyWorldMapAiStatus');
+        const panel = document.getElementById('storyWorldMapAiPanel');
+        if (!status || !panel) return;
+
+        status.innerHTML = '<div class="ai-status analyzing"><span class="spinner"></span> Building map prompt (text AI if available), then requesting image…</div>';
+        const prompt = await AIService.generateStoryWorldMapGrokPromptDetailed(this.storyData);
+
+        status.innerHTML = '<div class="ai-status analyzing"><span class="spinner"></span> Requesting map from your image API…</div>';
+        panel.classList.add('hidden');
+        panel.innerHTML = '';
+
+        try {
+            const imageUrl = await AIService.generateImage(prompt);
+            this.ensureStoryWorldMapGallery();
+            this.storyData.storyWorldMapGallery.items.unshift({
+                id: Date.now(),
+                imageUrl,
+                createdAt: new Date().toISOString()
+            });
+            this.storyData.storyWorldMapGallery.items = this.storyData.storyWorldMapGallery.items.slice(0, 36);
+            StorageService.saveStoryData(this.storyData);
+            this.renderStoryWorldMapGallery();
+
+            panel.classList.remove('hidden');
+            panel.innerHTML = `
+                <div class="mb-3 text-xs font-extrabold uppercase tracking-wide text-violet-300/90">Latest AI realm map</div>
+                <img src="${imageUrl}" alt="AI-generated story world map" loading="lazy" />
+                <p class="mt-3 text-xs leading-relaxed text-zinc-500">Saved to your story gallery below. Open full size in a new tab from the gallery thumbnails.</p>`;
+            status.innerHTML = '<div class="ai-status connected">✅ Map image received and saved. Tune model in AI Settings if results differ.</div>';
+        } catch (error) {
+            status.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(error.message)}</div>`;
+        }
     },
 
     // ============ STORYBOARD BUILDER (Timeline prompts + user-pasted images) ============
@@ -3224,11 +4168,11 @@ const App = {
                 <div class="storyboard-card-header">
                     <div>
                         <div class="storyboard-card-title">${safeTitle}</div>
-                        <div class="text-sm text-gray-600">Timeline Event: E${item.eventId}</div>
+                        <div class="text-sm text-zinc-400">Timeline event: E${item.eventId}</div>
                     </div>
-                    <div style="display:flex; gap:0.4rem; flex-wrap: wrap;">
-                        <button style="background:#16a34a; padding:0.45rem 0.7rem; font-size:0.8rem;" onclick="App.copyStoryboardPrompt(${item.id})">Copy Prompt</button>
-                        <button style="background:#2563eb; padding:0.45rem 0.7rem; font-size:0.8rem;" onclick="App.regenStoryboardPrompt(${item.id})">Rebuild</button>
+                    <div class="flex flex-wrap gap-2">
+                        <button class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-extrabold text-emerald-100 hover:bg-emerald-500/15" onclick="App.copyStoryboardPrompt(${item.id})">Copy prompt</button>
+                        <button class="rounded-lg bg-gradient-to-r from-indigo-500 to-violet-600 px-3 py-1.5 text-[11px] font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.regenStoryboardPrompt(${item.id})">Rebuild</button>
                     </div>
                 </div>
                 <div class="storyboard-card-body">
@@ -3236,16 +4180,16 @@ const App = {
                     <div style="margin-top:0.75rem;">
                         ${hasImage
                             ? `<img class="storyboard-image" src="${this.escapeHTML(imgSrc)}" alt="Storyboard scene image">`
-                            : `<div class="storyboard-image" style="display:flex;align-items:center;justify-content:center;color:#6b7280;font-size:0.9rem;">No image yet</div>`
+                            : `<div class="storyboard-image flex items-center justify-center text-sm text-zinc-500">No image yet</div>`
                         }
                     </div>
                     <div class="storyboard-dropzone" onpaste="App.handleStoryboardPaste(event, ${item.id})">
                         <strong>Paste / Attach Image</strong>
-                        <div class="text-sm text-gray-600">- Paste an image (clipboard) into this box, or paste an image URL below, or upload a file.</div>
+                        <div class="text-sm text-zinc-400">Paste an image from the clipboard, paste a URL, or upload a file.</div>
                         <input type="text" placeholder="Paste image URL (https://... or data:image/...)" value="${this.escapeHTML(imgSrc)}" oninput="App.setStoryboardImageUrl(${item.id}, this.value)">
                         <div class="storyboard-actions">
                             <input type="file" accept="image/*" onchange="App.uploadStoryboardImage(${item.id}, this.files?.[0] || null)" />
-                            <button style="background:#ef4444; padding:0.45rem 0.7rem; font-size:0.8rem;" onclick="App.removeStoryboardImage(${item.id})">Remove Image</button>
+                            <button class="rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-1.5 text-[11px] font-extrabold text-rose-100 hover:bg-rose-500/15" onclick="App.removeStoryboardImage(${item.id})">Remove image</button>
                         </div>
                     </div>
                 </div>
@@ -3446,17 +4390,17 @@ const App = {
         container.innerHTML = reports.map(report => {
             const cssClass = report.status === 'error'
                 ? 'issue'
-                : (report.type === 'continuity' ? 'warning' : 'suggestion');
+                : (report.type === 'continuity' || report.type === 'historical-accuracy' ? 'warning' : 'suggestion');
             const timestamp = new Date(report.createdAt).toLocaleString();
             const suggestedTab = this.inferReportTargetTab(report);
             const suggestedLabel = this.getTabDisplayName(suggestedTab);
-            return `<div class="ai-result ${cssClass}" style="margin-bottom: 1rem;">
+            return `<div class="ai-result ${cssClass} mb-4">
                 <strong>${report.title}</strong>
-                <div class="text-sm text-gray-600" style="margin-top: 0.25rem;">${timestamp}</div>
-                <div style="margin-top: 1rem; white-space: pre-wrap;">${this.formatReportContent(report.content)}</div>
-                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem;">
-                    <button style="background: #2563eb; font-size: 0.85rem; padding: 0.5rem 0.75rem;" onclick="App.openReportTarget(${report.id})">Open Suggested Area (${suggestedLabel})</button>
-                    <button style="background: #16a34a; font-size: 0.85rem; padding: 0.5rem 0.75rem;" onclick="App.addReportToWorkItems(${report.id})">Add as Work Item</button>
+                <div class="mt-1 text-sm text-zinc-400">${timestamp}</div>
+                <div class="mt-4 whitespace-pre-wrap">${this.formatReportContent(report.content)}</div>
+                <div class="mt-4 flex flex-wrap gap-2">
+                    <button class="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-3 py-2 text-xs font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.openReportTarget(${report.id})">Open suggested area (${suggestedLabel})</button>
+                    <button class="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-extrabold text-emerald-100 hover:bg-emerald-500/15" onclick="App.addReportToWorkItems(${report.id})">Add as work item</button>
                 </div>
             </div>`;
         }).join('');
@@ -3488,7 +4432,11 @@ const App = {
                 || normalized.includes('inconsisten')
                 || normalized.includes('plot hole')
                 || normalized.includes('concern')
-                || normalized.includes('risk');
+                || normalized.includes('risk')
+                || normalized.includes('anachron')
+                || normalized.includes('historical')
+                || normalized.includes('likely issue')
+                || normalized.includes('uncertain');
             return isActionLine
                 ? `<div class="report-action-line">${escaped}</div>`
                 : `<div>${escaped || '&nbsp;'}</div>`;
@@ -3516,7 +4464,11 @@ const App = {
                     || normalized.includes('inconsisten')
                     || normalized.includes('plot hole')
                     || normalized.includes('concern')
-                    || normalized.includes('risk');
+                    || normalized.includes('risk')
+                    || normalized.includes('anachron')
+                    || normalized.includes('likely issue')
+                    || normalized.includes('uncertain—verify')
+                    || normalized.includes('research angles');
             });
 
             if (actionableLines.length === 0 && lines.length > 0) {
@@ -3550,8 +4502,8 @@ const App = {
             <div class="ai-action-item">
                 <div class="ai-action-item-text">🔴 ${this.escapeHTML(item.text)}</div>
                 <div class="ai-action-item-actions">
-                    <button style="background: #2563eb; font-size: 0.8rem; padding: 0.45rem 0.7rem;" onclick="App.switchTab('${item.suggestedTab}')">Open ${this.getTabDisplayName(item.suggestedTab)}</button>
-                    <button style="background: #16a34a; font-size: 0.8rem; padding: 0.45rem 0.7rem;" onclick="App.addActionItemToWorkItems('${item.id}')">Add Task</button>
+                    <button class="rounded-lg bg-gradient-to-r from-indigo-500 to-violet-600 px-3 py-1.5 text-[11px] font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.switchTab('${item.suggestedTab}')">Open ${this.getTabDisplayName(item.suggestedTab)}</button>
+                    <button class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-extrabold text-emerald-100 hover:bg-emerald-500/15" onclick="App.addActionItemToWorkItems('${item.id}')">Add task</button>
                 </div>
             </div>
         `;
@@ -3564,7 +4516,7 @@ const App = {
                     <div class="ai-action-queue">
                         <div class="ai-action-queue-header">
                             <strong>🚨 Priority Action Queue</strong>
-                            <button style="background: #dc2626; font-size: 0.8rem; padding: 0.45rem 0.7rem;" onclick="App.switchTab('ai-actions')">View All (${items.length})</button>
+                            <button class="rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-1.5 text-[11px] font-extrabold text-rose-100 hover:bg-rose-500/15" onclick="App.switchTab('ai-actions')">View all (${items.length})</button>
                         </div>
                         ${items.slice(0, 5).map(renderItemRow).join('')}
                     </div>
@@ -3611,6 +4563,8 @@ const App = {
      * Guess the best tab to resolve a report.
      */
     inferReportTargetTab(report) {
+        if (report?.type === 'story-build') return 'dashboard';
+        if (report?.type === 'historical-accuracy') return 'workitems';
         const text = `${report.title}\n${report.content}`.toLowerCase();
         if (text.includes('timeline') || text.includes('continuity') || text.includes('chronology') || text.includes('beat')) return 'timeline';
         if (text.includes('character') || text.includes('relationship') || text.includes('motivation') || text.includes('arc')) return 'characters';
@@ -3674,11 +4628,17 @@ const App = {
             workitems: 'Scene Planning'
         };
 
+        const category = report.type === 'historical-accuracy'
+            ? 'Historical Research'
+            : (categoryMap[targetTab] || 'Scene Planning');
+
         this.storyData.workItems.push({
             id: Math.max(...this.storyData.workItems.map(w => w.id), 0) + 1,
             title,
-            category: categoryMap[targetTab] || 'Scene Planning',
-            completed: false
+            category,
+            completed: false,
+            isCanon: false,
+            tags: []
         });
 
         this.save();
@@ -3723,6 +4683,8 @@ const App = {
                 runStatus.innerHTML = '<div class="ai-status connected">✅ Full story analysis saved. See Suggested Actions below.</div>';
                 this.suggestedActionsUI.selected = {};
                 this.renderAISuggestedActions();
+                this.renderAIReports();
+                this.renderAIActionItems();
             } else {
                 const message = 'Failed to get analysis. Check AI connection in settings.';
                 this.addAIReport('story', '📊 Full Story Analysis', message, 'error');
@@ -3731,6 +4693,79 @@ const App = {
         } catch (error) {
             this.addAIReport('story', '📊 Full Story Analysis', `Error: ${error.message}`, 'error');
             runStatus.innerHTML = '<div class="ai-status disconnected">❌ Error: ' + error.message + '</div>';
+        }
+    },
+
+    /**
+     * Synthesize continuity/plot/character findings + story snapshot into structured builds
+     * (new beats, work items, character arc notes) via AIService.
+     */
+    async suggestStoryBuildFromIssues() {
+        const runStatus = document.getElementById('aiRunStatus');
+        if (!runStatus) return;
+        runStatus.innerHTML = '<div class="ai-result"><span class="spinner"></span> Finding issues and drafting story builds from your data and recent AI reports…</div>';
+
+        try {
+            const raw = await AIService.generateStoryBuildSuggestions(this.storyData);
+            const parsed = this.parseAIJSON(raw);
+            const actions = (Array.isArray(parsed?.suggestedActions) ? parsed.suggestedActions : [])
+                .map((a) => ({
+                    ...a,
+                    isCanon: false,
+                    tags: Array.isArray(a?.tags) ? Array.from(new Set([...(a.tags || []), 'draft', 'story-build'])) : ['draft', 'story-build']
+                }));
+            const issues = Array.isArray(parsed?.issuesFound) ? parsed.issuesFound : [];
+
+            const lines = [];
+            lines.push('## Issues flagged');
+            if (issues.length === 0) {
+                lines.push('_No issues array in model output — see raw JSON in Saved reports if needed._');
+            } else {
+                issues.forEach((i) => {
+                    const sev = String(i.severity || 'med').trim();
+                    const area = String(i.area || 'general').trim();
+                    const sum = String(i.summary || '').trim();
+                    lines.push(`- **${sev}** · ${area}: ${sum}`);
+                });
+            }
+            lines.push('');
+            lines.push('## Suggested builds (checkboxes + apply buttons below)');
+            if (actions.length === 0) {
+                lines.push('_No structured suggestedActions returned. Open Saved reports for raw model text, tighten AI settings, or retry._');
+            } else {
+                actions.forEach((a) => {
+                    const t = String(a.title || 'Untitled').trim();
+                    const ty = String(a.actionType || '').trim();
+                    const d = String(a.description || '').trim();
+                    lines.push(`- **${t}** (${ty}): ${d}`);
+                });
+            }
+
+            const humanContent = lines.join('\n');
+            const fallbackRaw = raw && String(raw).trim() && actions.length === 0
+                ? `\n\n--- Model output (trimmed) ---\n${String(raw).slice(0, 12000)}`
+                : '';
+
+            this.addAIReport(
+                'story-build',
+                '🔧 AI story build from issues',
+                `${humanContent}${fallbackRaw}`,
+                'success',
+                actions.length ? actions : undefined
+            );
+            this.suggestedActionsUI.selected = {};
+            this.renderAISuggestedActions();
+            this.renderAIReports();
+            this.renderAIActionItems();
+
+            if (actions.length === 0) {
+                runStatus.innerHTML = '<div class="ai-result suggestion">⚠️ Report saved, but suggestions could not be parsed as JSON. Check <strong>Saved reports</strong> for raw output, then retry or run <strong>Full story analysis</strong>.</div>';
+            } else {
+                runStatus.innerHTML = '<div class="ai-status connected">✅ Build suggestions saved. Use the checklist below to add timeline beats, tasks, or character arc notes.</div>';
+            }
+        } catch (error) {
+            this.addAIReport('story-build', '🔧 AI story build from issues', `Error: ${error.message}`, 'error');
+            runStatus.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(error.message)}</div>`;
         }
     },
 
@@ -3750,11 +4785,19 @@ const App = {
         }
     },
 
+    /**
+     * Latest structured suggestions from the most recent AI report that included `suggestedActions`
+     * (full story analysis, story-build pass, etc.). Reports are newest-first.
+     */
     getLatestStorySuggestedActions() {
         const reports = Array.isArray(this.storyData.aiReports) ? this.storyData.aiReports : [];
-        const latest = reports.find(r => r && r.type === 'story' && r.status !== 'error');
-        const actions = Array.isArray(latest?.suggestedActions) ? latest.suggestedActions : [];
-        return actions.slice(0, 25);
+        for (let i = 0; i < reports.length; i += 1) {
+            const r = reports[i];
+            if (!r || r.status === 'error') continue;
+            const actions = Array.isArray(r.suggestedActions) ? r.suggestedActions : [];
+            if (actions.length) return actions.slice(0, 25);
+        }
+        return [];
     },
 
     toggleSuggestedActionSelection(idx, checked) {
@@ -3844,22 +4887,22 @@ const App = {
         }
 
         container.innerHTML = `
-            <div class="ai-result suggestion" style="margin-top: 0.75rem;">
+            <div class="ai-result suggestion mt-3">
                 <div class="ai-header">
-                    <h3 style="margin: 0;">Suggested Actions</h3>
-                    <div style="display:flex; gap:0.5rem; flex-wrap: wrap;">
-                        <button style="background:#2563eb; font-size:0.85rem; padding:0.5rem 0.75rem;" onclick="App.applySuggestedActionsToTimeline()">Add as New Timeline Events</button>
-                        <button style="background:#16a34a; font-size:0.85rem; padding:0.5rem 0.75rem;" onclick="App.applySuggestedActionsToWorkItems()">Add as Work Items</button>
-                        <button style="background:#7c3aed; font-size:0.85rem; padding:0.5rem 0.75rem;" onclick="App.applySuggestedActionsToCharacterArcs()">Update Character Arcs</button>
-                        <button style="background:#d97706; font-size:0.85rem; padding:0.5rem 0.75rem;" onclick="App.promoteSelectedSuggestedActionsToCanon()">Promote selected to Canon</button>
+                    <h3 class="m-0">Suggested actions</h3>
+                    <div class="flex flex-wrap gap-2">
+                        <button class="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-3 py-2 text-xs font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.applySuggestedActionsToTimeline()">Add timeline events</button>
+                        <button class="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-extrabold text-emerald-100 hover:bg-emerald-500/15" onclick="App.applySuggestedActionsToWorkItems()">Add work items</button>
+                        <button class="rounded-xl border border-violet-500/35 bg-violet-600/15 px-3 py-2 text-xs font-extrabold text-violet-100 hover:bg-violet-600/20" onclick="App.applySuggestedActionsToCharacterArcs()">Update character arcs</button>
+                        <button class="rounded-xl border border-amber-400/35 bg-amber-400/10 px-3 py-2 text-xs font-extrabold text-amber-200 hover:bg-amber-400/15" onclick="App.promoteSelectedSuggestedActionsToCanon()">Promote selected to canon</button>
                     </div>
                 </div>
-                <div class="text-sm text-gray-600" style="margin-top:0.5rem;">Based on the latest Full Story Analysis. Buttons apply all matching suggestions (deduped).</div>
-                <div style="margin-top:0.75rem;">
+                <div class="mt-2 text-sm text-zinc-400">Pulled from the <strong class="text-zinc-200">newest AI report</strong> that included structured suggestions (full story analysis or <strong class="text-zinc-200">Suggest fixes & builds</strong>). Buttons apply all matching rows (deduped by title).</div>
+                <div class="mt-3">
                     ${actions.map((a, idx) => `
-                        <div class="preview-item" style="border-bottom: 1px solid rgba(15, 23, 42, 0.06);">
+                        <div class="preview-item border-b border-zinc-200/40 last:border-b-0 dark:border-zinc-800/80">
                             <input type="checkbox" onchange="App.toggleSuggestedActionSelection(${idx}, this.checked)">
-                            <div style="flex:1;">
+                            <div class="min-w-0 flex-1">
                                 <div class="preview-item-title">${this.escapeHTML(String(a.title || 'Suggestion'))} <span class="preview-item-sub">(${this.escapeHTML(String(this.normalizeSuggestedActionType(a.actionType)))}, draft)</span></div>
                                 <div class="preview-item-sub">${this.escapeHTML(String(a.description || ''))}</div>
                             </div>
@@ -3892,16 +4935,15 @@ const App = {
             if (!title) return;
             const key = title.toLowerCase();
             if (existingTitles.has(key)) return;
-            this.storyData.events.push({
+            this.storyData.events.push(createTimelineEvent({
                 id: nextEventId++,
                 title,
                 period: '',
                 order: this.storyData.events.length,
                 beat: null,
                 description: String(a.description || '').trim(),
-                fullDescription: '',
-                involvedCharacterIds: []
-            });
+                location: String(a.location || '').trim()
+            }));
             existingTitles.add(key);
             added += 1;
         });
@@ -3928,8 +4970,10 @@ const App = {
             this.storyData.workItems.push({
                 id: nextWorkId++,
                 title,
-                category: 'Scene Planning',
-                completed: false
+                category: String(a.category || '').trim() || 'Scene Planning',
+                completed: false,
+                isCanon: false,
+                tags: []
             });
             existing.add(key);
             added += 1;
@@ -3982,6 +5026,8 @@ const App = {
             if (result) {
                 this.addAIReport('continuity', '🔗 Continuity Analysis', result, 'success');
                 runStatus.innerHTML = '<div class="ai-status connected">✅ Continuity report saved to history.</div>';
+                this.renderAIReports();
+                this.renderAIActionItems();
             } else {
                 const message = 'Failed to check continuity. Check AI connection in settings.';
                 this.addAIReport('continuity', '🔗 Continuity Analysis', message, 'error');
@@ -4005,6 +5051,8 @@ const App = {
             if (result) {
                 this.addAIReport('characters', '👥 Character Development Analysis', result, 'success');
                 runStatus.innerHTML = '<div class="ai-status connected">✅ Character report saved to history.</div>';
+                this.renderAIReports();
+                this.renderAIActionItems();
             } else {
                 const message = 'Failed to analyze characters. Check AI connection in settings.';
                 this.addAIReport('characters', '👥 Character Development Analysis', message, 'error');
@@ -4028,6 +5076,8 @@ const App = {
             if (result) {
                 this.addAIReport('plot', '📖 Plot Structure Analysis', result, 'success');
                 runStatus.innerHTML = '<div class="ai-status connected">✅ Plot report saved to history.</div>';
+                this.renderAIReports();
+                this.renderAIActionItems();
             } else {
                 const message = 'Failed to analyze plot. Check AI connection in settings.';
                 this.addAIReport('plot', '📖 Plot Structure Analysis', message, 'error');
@@ -4037,8 +5087,37 @@ const App = {
             this.addAIReport('plot', '📖 Plot Structure Analysis', `Error: ${error.message}`, 'error');
             runStatus.innerHTML = '<div class="ai-status disconnected">❌ Error: ' + error.message + '</div>';
         }
+    },
+
+    /**
+     * Historical / material / institutional accuracy (not character arcs or beat structure).
+     */
+    async analyzeHistoricalAccuracy() {
+        const runStatus = document.getElementById('aiRunStatus');
+        if (!runStatus) return;
+        runStatus.innerHTML = '<div class="ai-result"><span class="spinner"></span> Checking historical & material plausibility…</div>';
+
+        try {
+            const result = await AIService.analyzeHistoricalAccuracy(this.storyData);
+            if (result) {
+                this.addAIReport('historical-accuracy', '📜 Historical accuracy pass', result, 'success');
+                runStatus.innerHTML = '<div class="ai-status connected">✅ Historical report saved. Use “Add as work item” to queue research tasks.</div>';
+                this.renderAIReports();
+                this.renderAIActionItems();
+            } else {
+                const message = 'Failed to run historical pass. Check AI connection in settings.';
+                this.addAIReport('historical-accuracy', '📜 Historical accuracy pass', message, 'error');
+                runStatus.innerHTML = `<div class="ai-status disconnected">❌ ${message}</div>`;
+            }
+        } catch (error) {
+            this.addAIReport('historical-accuracy', '📜 Historical accuracy pass', `Error: ${error.message}`, 'error');
+            runStatus.innerHTML = `<div class="ai-status disconnected">❌ ${this.escapeHTML(error.message)}</div>`;
+        }
     }
 };
+
+// Keep legacy global access for inline onclick handlers.
+globalThis.App = App;
 
 // ============ MODALS CREATION ============
 
@@ -4078,7 +5157,7 @@ function createEventEditorModal() {
         <div id="eventEditorModal" class="event-editor-modal">
             <div class="event-editor-content">
                 <span class="modal-close" onclick="App.closeEventEditor()">&times;</span>
-                <h2>Edit Event</h2>
+                <h2>Add / Edit Event</h2>
                 <div id="eventEditorForm" style="margin-top: 1rem;"></div>
                 <button onclick="App.saveEventEdit()" style="margin-top: 1rem; width: 100%;">Save Event</button>
             </div>
@@ -4107,9 +5186,9 @@ function createAISettingsModal() {
                     </label>
                 </div>
 
-                <div style="background: #f3f4f6; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1.5rem; font-size: 0.875rem;">
-                    <strong>Platform Info:</strong>
-                    <p id="platformInfo" style="margin-top: 0.5rem;"></p>
+                <div class="mb-6 rounded-2xl border border-zinc-200/50 bg-zinc-50/80 p-4 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-200">
+                    <strong>Platform info</strong>
+                    <p id="platformInfo" class="mt-2 text-sm text-zinc-500 dark:text-zinc-400"></p>
                 </div>
 
                 <h3 style="margin-bottom: 1rem;">Connection Settings</h3>
@@ -4128,7 +5207,7 @@ function createAISettingsModal() {
 
                 <h3 style="margin-bottom: 1rem; margin-top: 1.5rem;">Available Models</h3>
                 <div id="modelList" class="model-list">
-                    <div class="model-item text-gray-500">No models loaded.</div>
+                    <div class="model-item text-zinc-400">No models loaded.</div>
                 </div>
 
                 <div>
@@ -4158,7 +5237,7 @@ function createAISettingsModal() {
                         <label class="block text-sm font-medium mb-2">Image API Key</label>
                         <input type="password" id="imageApiKey" class="form-input" placeholder="Optional if endpoint requires Bearer token">
                     </div>
-                    <p class="text-gray-600 text-sm" style="margin-top: 0.5rem;">
+                    <p class="text-zinc-400 text-sm" style="margin-top: 0.5rem;">
                         Uses an OpenAI-compatible image endpoint (POST with model + prompt). You can plug in Grok Imagine, Gemini-compatible gateways, or other providers.
                     </p>
                 </div>
@@ -4168,7 +5247,7 @@ function createAISettingsModal() {
                         <label class="block text-sm font-medium mb-2">Nano Banana API Key</label>
                         <input type="password" id="nanoBananaApiKey" class="form-input" placeholder="Bearer token for AceData Cloud">
                     </div>
-                    <p class="text-gray-600 text-sm" style="margin-top: 0.5rem;">
+                    <p class="text-zinc-400 text-sm" style="margin-top: 0.5rem;">
                         Uses https://api.acedata.cloud/nano-banana/images with JSON {"action":"generate","prompt": "...", "count": 1}.
                     </p>
                 </div>
@@ -4190,11 +5269,11 @@ function createAISettingsModal() {
                     <label class="block text-sm font-medium mb-2">Deep Research API Key</label>
                     <input type="password" id="deepResearchApiKey" class="form-input" placeholder="Optional Bearer token">
                 </div>
-                <p class="text-gray-600 text-sm" style="margin-top: 0.5rem;">
+                <p class="text-zinc-400 text-sm" style="margin-top: 0.5rem;">
                     Set this endpoint to your LangChain Open Deep Research server. Work item buttons allow agent research and optional web fallback.
                 </p>
 
-                <button onclick="App.saveAISettings()" style="margin-top: 1.5rem; width: 100%;">Save Settings</button>
+                <button class="mt-6 w-full rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-3 text-sm font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.saveAISettings()">Save settings</button>
             </div>
         </div>
     `;
@@ -4208,7 +5287,7 @@ function createImportNotesModal() {
             <div class="ai-settings-content" style="max-width: 860px;">
                 <span class="modal-close" onclick="App.closeImportNotesModal()">&times;</span>
                 <h2>📝 Import Notes</h2>
-                <p class="text-gray-600 mb-4">Paste your story notes or upload a file. The local AI will extract structured items you can merge into your story.</p>
+                <p class="text-zinc-400 mb-4">Paste your story notes or upload a file. The local AI will extract structured items you can merge into your story.</p>
 
                 <div class="modal-tabs">
                     <button id="importTabPaste" class="modal-tab active" onclick="App.setImportNotesTab('paste')">Paste Text</button>
@@ -4223,12 +5302,12 @@ function createImportNotesModal() {
                 <div id="importPaneUpload" style="display:none; margin-top: 0.75rem;">
                     <label class="block text-sm font-medium mb-2">Upload a .txt or .md file</label>
                     <input type="file" class="form-input" accept=".txt,.md,text/plain,text/markdown" onchange="App.onImportNotesFileSelected(this.files?.[0] || null)">
-                    <div class="text-sm text-gray-600" style="margin-top:0.4rem;">After upload, you’ll be returned to Paste Text with the file contents loaded.</div>
+                    <div class="text-sm text-zinc-400" style="margin-top:0.4rem;">After upload, you’ll be returned to Paste Text with the file contents loaded.</div>
                 </div>
 
                 <div style="display:flex; gap:0.6rem; flex-wrap: wrap; margin-top: 0.9rem;">
                     <button class="ai-btn" onclick="App.extractFromNotes()">✨ Extract with AI</button>
-                    <button style="background:#16a34a;" onclick="App.addImportedToStory()">✅ Add to Story</button>
+                    <button class="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-2.5 text-sm font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.addImportedToStory()">✅ Add to story</button>
                     <button class="topbar-ghost" onclick="App.closeImportNotesModal()">Cancel</button>
                 </div>
 
@@ -4247,10 +5326,10 @@ function createAnalyzeImportModal() {
             <div class="ai-settings-content" style="max-width: 980px;">
                 <span class="modal-close" onclick="App.closeAnalyzeImportModal()">&times;</span>
                 <h2>✨ Analyze & Import</h2>
-                <p class="text-gray-600 mb-4">Review suggestions side-by-side with your current story. Uncheck anything you don’t want to add.</p>
+                <p class="text-zinc-400 mb-4">Review suggestions side-by-side with your current story. Uncheck anything you don’t want to add.</p>
 
                 <div style="display:flex; gap:0.6rem; flex-wrap: wrap;">
-                    <button style="background:#16a34a;" onclick="App.applyDashboardSuggestions()">✅ Add Accepted Items</button>
+                    <button class="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-2.5 text-sm font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.applyDashboardSuggestions()">✅ Add accepted items</button>
                     <button class="topbar-ghost" onclick="App.closeAnalyzeImportModal()">Close</button>
                 </div>
 
@@ -4272,7 +5351,7 @@ function createRelationshipModal() {
                     <strong id="relFromName">Character A</strong>
                     <span style="margin: 0 0.4rem;">↔</span>
                     <strong id="relToName">Character B</strong>
-                    <div class="text-sm text-gray-600" style="margin-top: 0.35rem;">This will link them as related characters. Optionally add type + notes.</div>
+                    <div class="text-sm text-zinc-400" style="margin-top: 0.35rem;">This will link them as related characters. Optionally add type + notes.</div>
                 </div>
 
                 <div style="margin-top: 0.75rem;">
@@ -4293,7 +5372,7 @@ function createRelationshipModal() {
                 </div>
 
                 <div style="display:flex; gap:0.6rem; flex-wrap: wrap; margin-top: 0.75rem;">
-                    <button style="background:#16a34a;" onclick="App.confirmRelationshipLink()">✅ Link Characters</button>
+                    <button class="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-2.5 text-sm font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.confirmRelationshipLink()">✅ Link characters</button>
                     <button class="topbar-ghost" onclick="App.closeRelationshipModal()">Cancel</button>
                 </div>
             </div>
@@ -4309,7 +5388,7 @@ function createCommandPaletteModal() {
             <div class="ai-settings-content" style="max-width: 720px;">
                 <span class="modal-close" onclick="App.closeCommandPalette()">&times;</span>
                 <h2>⌘ Command Palette</h2>
-                <p class="text-gray-600 mb-4">Type to filter, Enter to run. (Cmd/Ctrl+K)</p>
+                <p class="text-zinc-400 mb-4">Type to filter, Enter to run. (Cmd/Ctrl+K)</p>
                 <input id="commandPaletteInput" class="form-input" placeholder="Search commands..." oninput="App.onCommandPaletteQuery(this.value)" onkeydown="App.onCommandPaletteKeydown(event)">
                 <div id="commandPaletteList" style="margin-top:0.75rem;"></div>
             </div>
@@ -4329,7 +5408,7 @@ function createCanonConfirmModal() {
                     <div id="canonModalBody">Marking as Canon protects this item from deletion and prevents AI imports from overwriting it.</div>
                 </div>
                 <div style="display:flex; gap:0.6rem; flex-wrap: wrap; margin-top: 0.75rem;">
-                    <button id="canonModalActionBtn" style="background:#d97706;" onclick="App.confirmToggleCanon()">Mark as Canon</button>
+                    <button id="canonModalActionBtn" class="rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-2.5 text-sm font-extrabold text-amber-200 hover:bg-amber-400/15" onclick="App.confirmToggleCanon()">Mark as canon</button>
                     <button class="topbar-ghost" onclick="App.closeCanonConfirmModal()">Cancel</button>
                 </div>
             </div>
@@ -4353,9 +5432,24 @@ function createDraftMergeModal() {
                     <select id="draftMergeTargetSelect" class="form-input"></select>
                 </div>
                 <div style="display:flex; gap:0.6rem; flex-wrap: wrap; margin-top: 0.75rem;">
-                    <button style="background:#2563eb;" onclick="App.confirmMergeDraft()">Merge & Delete Draft</button>
+                    <button class="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-2.5 text-sm font-extrabold text-white shadow-sm shadow-indigo-500/20 ring-1 ring-white/10 hover:brightness-105" onclick="App.confirmMergeDraft()">Merge & delete draft</button>
                     <button class="topbar-ghost" onclick="App.closeMergeDraftModal()">Cancel</button>
                 </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+// Drafts review panel modal
+function createDraftsPanelModal() {
+    const html = `
+        <div id="draftsPanelModal" class="ai-settings-modal" onclick="if(event.target && event.target.id==='draftsPanelModal'){ App.closeDraftsPanel(); }">
+            <div class="ai-settings-content" style="max-width: 920px;">
+                <span class="modal-close" onclick="App.closeDraftsPanel()">&times;</span>
+                <h2>🧾 Review Drafts</h2>
+                <p class="text-zinc-400 mb-4">Drafts are non‑canon suggestions. Promote intentionally or merge into an existing canon item.</p>
+                <div id="draftsPanelBody"></div>
             </div>
         </div>
     `;
@@ -4373,6 +5467,29 @@ createRelationshipModal();
 createCommandPaletteModal();
 createCanonConfirmModal();
 createDraftMergeModal();
+createDraftsPanelModal();
+
+function createStoryWorldMapGrokModal() {
+    const html = `
+        <div id="storyWorldMapGrokModal" class="ai-settings-modal story-world-map-grok-modal" onclick="if(event.target && event.target.id==='storyWorldMapGrokModal'){ App.closeStoryWorldMapGrokModal(); }">
+            <div class="ai-settings-content story-world-map-grok-modal-content max-h-[min(92vh,56rem)] overflow-y-auto rounded-2xl border border-zinc-800/90 bg-zinc-950 p-6 shadow-[0_32px_80px_-20px_rgba(0,0,0,0.85)] ring-1 ring-inset ring-violet-500/15 sm:p-8">
+                <span class="modal-close text-zinc-500 hover:text-zinc-200" onclick="App.closeStoryWorldMapGrokModal()">&times;</span>
+                <div class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-violet-400/95">Grok Imagine</div>
+                <h2 class="mt-2 text-2xl font-black tracking-tight text-zinc-50">Story World Map — prompt</h2>
+                <p class="mt-2 max-w-3xl text-sm leading-relaxed text-zinc-400">Timeline events <strong class="text-zinc-200">with a location</strong> are sent to your <strong class="text-violet-300">text AI</strong> (LM Studio / Ollama) to produce one rich, copy-ready image prompt. If the text AI is offline, you still get the built-in draft.</p>
+                <p id="storyWorldMapGrokModalStatus" class="story-world-map-grok-modal-status mt-3 hidden text-sm font-semibold text-violet-300/95" role="status"></p>
+                <textarea id="storyWorldMapGrokModalPrompt" readonly rows="22" spellcheck="false" class="form-input story-world-map-prompt-text mt-4 min-h-[14rem] w-full resize-y rounded-xl border border-zinc-700/90 bg-zinc-900/80 px-4 py-3 text-sm leading-relaxed text-zinc-100 shadow-inner shadow-black/30 dark:border-zinc-700 dark:bg-zinc-900/80 dark:text-zinc-100" aria-label="Grok Imagine world map prompt"></textarea>
+                <div id="storyWorldMapGrokModalActions" class="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                    <button type="button" class="w-full rounded-xl bg-violet-600 px-6 py-3.5 text-base font-extrabold text-white shadow-lg shadow-violet-950/50 ring-1 ring-inset ring-white/10 transition hover:bg-violet-500 hover:brightness-105 active:scale-[0.99] sm:w-auto" onclick="App.copyStoryWorldMapGrokModalPrompt()">Copy Prompt to Clipboard</button>
+                    <button type="button" class="w-full rounded-xl border border-zinc-600/90 bg-zinc-900/60 px-6 py-3 text-sm font-extrabold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800/80 sm:w-auto" onclick="App.closeStoryWorldMapGrokModal()">Close</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalsContainer').innerHTML += html;
+}
+
+createStoryWorldMapGrokModal();
 
 // Start the application
 App.init();

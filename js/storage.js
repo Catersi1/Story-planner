@@ -3,136 +3,471 @@
  * Handles all data persistence using localStorage
  */
 
-const STORAGE_KEYS = {
+export const STORAGE_KEYS = {
     STORY_DATA: 'storyData',
     AI_SETTINGS: 'aiSettings'
 };
 
-const StorageService = {
+/** Preset locations for timeline events (Add/Edit Event UI). Matches Ghost Border map registry + aliases in `App.js`. */
+export const TIMELINE_LOCATION_PRESETS = [
+    'Time Portal Cave',
+    'Disgraced Manor',
+    'Forbidden Garden',
+    'Imperial Market Square',
+    'Daming Palace',
+    'Grey Dragon Road',
+    'Secret Metropolis'
+];
+
+/** `<select>` value when the stored location is custom (not a preset). */
+export const TIMELINE_LOCATION_OTHER = '__other__';
+
+/**
+ * Map stored `event.location` to dropdown value + optional custom line.
+ */
+export function splitTimelineLocation(location) {
+    const s = String(location ?? '').trim();
+    if (!s) return { preset: '', custom: '' };
+    if (TIMELINE_LOCATION_PRESETS.includes(s)) return { preset: s, custom: '' };
+    return { preset: TIMELINE_LOCATION_OTHER, custom: s };
+}
+
+/**
+ * Persist location from preset `<select>` + optional custom field.
+ */
+export function joinTimelineLocation(preset, custom) {
+    const p = String(preset ?? '').trim();
+    const c = String(custom ?? '').trim();
+    if (!p) return c;
+    if (p === TIMELINE_LOCATION_OTHER) return c;
+    return p;
+}
+
+/**
+ * Default shape for a timeline row (`storyData.events[]`): includes `location` (preset string or custom text).
+ * @typedef {Object} TimelineEvent
+ * @property {number} id
+ * @property {string} title
+ * @property {string} period
+ * @property {number} order
+ * @property {string|null} beat
+ * @property {string} description
+ * @property {string} location
+ * @property {string} fullDescription
+ * @property {number[]} involvedCharacterIds
+ * @property {boolean} isCanon
+ * @property {string[]} tags
+ */
+
+/**
+ * Create a timeline row with defaults; `location` defaults to "".
+ * @param {Object} [overrides]
+ * @returns {TimelineEvent}
+ */
+export function createTimelineEvent(overrides = {}) {
+    return {
+        id: 0,
+        title: '',
+        period: '',
+        order: 0,
+        beat: null,
+        description: '',
+        location: '',
+        fullDescription: '',
+        involvedCharacterIds: [],
+        isCanon: false,
+        tags: [],
+        ...overrides
+    };
+}
+
+/** Same as {@link createTimelineEvent} (legacy name). */
+export function createEmptyTimelineEvent(overrides = {}) {
+    return createTimelineEvent(overrides);
+}
+
+/**
+ * Merge `patch` into a timeline event and normalize `location` (string) and arrays.
+ * @param {Object|null|undefined} event
+ * @param {Object} [patch]
+ * @returns {TimelineEvent}
+ */
+export function updateTimelineEvent(event, patch = {}) {
+    const base = event && typeof event === 'object' ? event : {};
+    const next = { ...base, ...patch };
+    if (typeof next.location !== 'string') {
+        next.location = '';
+    }
+    if (!Array.isArray(next.involvedCharacterIds)) {
+        next.involvedCharacterIds = [];
+    }
+    if (!Array.isArray(next.tags)) {
+        next.tags = [];
+    }
+    if (typeof next.isCanon !== 'boolean') {
+        next.isCanon = false;
+    }
+    return /** @type {TimelineEvent} */ (next);
+}
+
+/**
+ * Canon starter pack: **Ghost Border — The Disgraced Grandson** (Feng, Prince Yu, Tang logistics realism).
+ * Used by `initializeStoryData()` and by `App.buildTemplateGhostBorderDisgracedGrandson()`.
+ * @returns {{ characters: object[], events: object[], plot: object[], politics: object[], workItems: object[] }}
+ */
+export function getGhostBorderCanonStoryCore() {
+    const characters = [
+        {
+            id: 1,
+            name: 'Feng',
+            age: 38,
+            role: 'Disgraced grandson · logistics veteran',
+            type: 'friendly',
+            background: 'Battle-hardened 38-year-old veteran pulled through a lightning-struck time portal. Former military logistics officer: systems, routes, ration accounting, and cold-truth efficiency. Carries the “disgraced grandson” look—worn cloak, rope-burned hands, eyes that inventory exits before pleasantries.',
+            personality: 'Pragmatic, sparing with words, dry humor under stress. Scar-first posture; distrusts court poetry until it proves useful.',
+            relatedCharacters: [2, 3, 4],
+            notes: 'Relationship (uneasy ally) with Prince Yu: Feng reads Yu as “soft hands, hard spine”—someone hiding rank.\nRelationship (professional trust) with Commander Lu: Lu holds the yard; Feng holds the numbers.\nRelationship (partner) with Lady Lin: she runs rumors and ledgers; he runs tools and risk.',
+            isCanon: true,
+            tags: ['protagonist', 'ghost-border', 'time-slip']
+        },
+        {
+            id: 2,
+            name: 'Prince Yu',
+            age: 23,
+            role: 'Survivor royal (incognito)',
+            type: 'friendly',
+            background: 'Young prince who lived through betrayal and now wants breath as a man, not a title. Moves quietly through border counties, testing who still remembers duty over lineage.',
+            personality: 'Quiet, introspective, observant. Courtesy as armor; anger slow to rise but expensive when it does.',
+            relatedCharacters: [1, 3, 5],
+            notes: 'Relationship (mutual cover) with Feng: Yu needs competence without questions; Feng needs protection without bows.\nRelationship (loyalty under orders) with Commander Lu: childhood tether; Lu would die for him and hates that fact.\nRelationship (enemy of my enemy) with Minister Cui: Cui’s faction broke Yu’s world once—Yu does not forget.',
+            isCanon: true,
+            tags: ['royal', 'incognito']
+        },
+        {
+            id: 3,
+            name: 'Commander Lu',
+            age: 44,
+            role: 'Scarred general · loyal enforcer',
+            type: 'friendly',
+            background: 'Massive, road-weathered general who enforces Prince Yu’s safety like a religion. Commands a small loyal cadre; prefers drill yards to tea poems.',
+            personality: 'Few words, loud integrity. Measures people by how they stand watch, not how they quote classics.',
+            relatedCharacters: [1, 2, 4, 5],
+            notes: 'Relationship (soldier’s respect) with Feng: hates Feng’s “strange talk,” loves that Feng makes the men eat on time.\nRelationship (oath-bound) with Prince Yu: would burn a province to keep Yu breathing.\nRelationship (cautious respect) with Lady Lin: accepts her schemes if they save blood.',
+            isCanon: true,
+            tags: ['military']
+        },
+        {
+            id: 4,
+            name: 'Lady Lin',
+            age: 34,
+            role: 'Strategist · Feng’s wife',
+            type: 'friendly',
+            background: 'Brilliant tactician behind the disgraced branch’s survival: marriage alliances, grain rumors, who owes whom in the market. Reads court edicts like battle maps.',
+            personality: 'Warm in private, steel in public. Laughs rarely; when she does, the room exhales.',
+            relatedCharacters: [1, 2, 3],
+            notes: 'Relationship (marriage of survival) with Feng: love is proven in ledgers shared at midnight.\nRelationship (political sisterhood-in-arms) with Prince Yu: teaches Yu how gossip moves faster than horses.\nRelationship (chain of command) with Commander Lu: she plans; he hits.',
+            isCanon: true,
+            tags: ['strategist']
+        },
+        {
+            id: 5,
+            name: 'Minister Cui Hang',
+            age: 62,
+            role: 'Grand Secretary (high court)',
+            type: 'antagonist',
+            background: 'Senior minister of the Chancellery: silk voice, jade-calm face, files that ruin families. Survived three reigns by never standing in the wrong shadow.',
+            personality: 'Cold, intelligent, ruthless. Rewards competence that serves him; buries competence that does not.',
+            relatedCharacters: [2, 3],
+            notes: 'Relationship (predator) with Prince Yu: knows a prince’s footprint even in peasant boots.\nRelationship (instrumental view) with Commander Lu: a blade he cannot buy—therefore a blade he will break.',
+            isCanon: true,
+            tags: ['antagonist', 'court']
+        }
+    ];
+
+    const events = [
+        {
+            id: 1,
+            title: 'Lightning in the Time Portal Cave',
+            period: 'Ep 1 · cold open',
+            order: 0,
+            beat: '1',
+            description: 'Thunder splits the cliff; ozone and wet stone. Feng snaps awake with a mouth full of ash, hands already checking pulse and gear—muscle memory before thought.',
+            location: 'Time Portal Cave',
+            fullDescription: 'You / establish protagonist: sensory overload, no exposition dump—only what his body does when the world wrong-foots him.',
+            involvedCharacterIds: [1],
+            isCanon: true,
+            tags: ['beat-1', 'portal']
+        },
+        {
+            id: 2,
+            title: 'Dragged back to the Disgraced Manor',
+            period: 'Ep 1',
+            order: 1,
+            beat: '2',
+            description: 'Torches, rough ropes, familiar shame. The Feng compound is half ruin: broken gate spirit, millet porridge thin as rumor. He needs allies, food, and silence—immediately.',
+            location: 'Disgraced Manor',
+            fullDescription: 'Need: survival stakes; the house is a character—drafts through paper windows, ancestors who do not forgive.',
+            involvedCharacterIds: [1, 4],
+            isCanon: true,
+            tags: ['beat-2']
+        },
+        {
+            id: 3,
+            title: 'Courtyard: Prince Yu and Commander Lu',
+            period: 'Ep 1–2',
+            order: 2,
+            beat: '3',
+            description: 'At false dawn, two men wait in the yard like a trial. Yu speaks softly; Lu does not speak at all. Feng realizes he has crossed from “lost” into someone else’s war.',
+            location: 'Disgraced Manor',
+            fullDescription: 'Go / threshold: first crossing into the hidden royal orbit—no crowns, only posture and consequence.',
+            involvedCharacterIds: [1, 2, 3, 4],
+            isCanon: true,
+            tags: ['beat-3']
+        },
+        {
+            id: 4,
+            title: 'Forbidden Garden: herbs, walls, and watchers',
+            period: 'Ep 2',
+            order: 3,
+            beat: '4',
+            description: 'Lin maps which walls echo and which do not. Feng catalogs plants like supply lines—what burns, what steeps, what sells without questions.',
+            location: 'Forbidden Garden',
+            fullDescription: 'Search: intelligence gathering as physical labor; Tang-era plant names where possible; tension through chores.',
+            involvedCharacterIds: [1, 4],
+            isCanon: true,
+            tags: ['beat-4']
+        },
+        {
+            id: 5,
+            title: "Dragon's Breath — first primitive still",
+            period: 'Ep 2–3',
+            order: 4,
+            beat: '5',
+            description: 'Copper scrap, clay seal, bad odds. The first distillate catches—blue flame, men crossing themselves. It is not magic; it is heat management, and it changes what they can trade.',
+            location: 'Disgraced Manor',
+            fullDescription: 'Find / “goddess”: the still as earned miracle—show chemistry through sweat and failure beats, not lecture.',
+            involvedCharacterIds: [1, 3, 4],
+            isCanon: true,
+            tags: ['beat-5', 'still']
+        },
+        {
+            id: 6,
+            title: 'Imperial Market Square: salt talk and knives in smiles',
+            period: 'Ep 3',
+            order: 5,
+            beat: '6',
+            description: 'Yu haggles in plain cloth; Feng moves crates like a sergeant. A salt merchant’s joke lands wrong—someone is listening for accents that do not belong.',
+            location: 'Imperial Market Square',
+            fullDescription: 'Take / price: visibility buys supplies and buys danger; court eyes as commerce.',
+            involvedCharacterIds: [1, 2, 4],
+            isCanon: true,
+            tags: ['beat-6']
+        },
+        {
+            id: 7,
+            title: 'Grey Dragon Road: escort and rumor',
+            period: 'Ep 3–4',
+            order: 6,
+            beat: '7',
+            description: 'Dust column on the road—Lu’s men form a traveling shell. Feng teaches march intervals using pebbles and breath, not slogans. A toll clerk remembers faces.',
+            location: 'Grey Dragon Road',
+            fullDescription: 'Return: bringing hard-won logistics knowledge “home” to the unit; the road remembers.',
+            involvedCharacterIds: [1, 3],
+            isCanon: true,
+            tags: ['beat-7']
+        },
+        {
+            id: 8,
+            title: 'Daming Palace: distance, drums, and a lesson in power',
+            period: 'Ep 4',
+            order: 7,
+            beat: '8',
+            description: 'From a pilgrim vantage, Feng watches scarlet columns swallow sound. He understands scale: the manor is a skirmish; this is a campaign map with no friendly margins.',
+            location: 'Daming Palace',
+            fullDescription: 'Change: worldview shift—Tang authority as logistics of violence and ritual.',
+            involvedCharacterIds: [1, 2],
+            isCanon: true,
+            tags: ['beat-8']
+        },
+        {
+            id: 9,
+            title: 'Lady Lin and Prince Yu — ledger and lineage',
+            period: 'Ep 4',
+            order: 8,
+            beat: '5',
+            description: 'In the garden’s blind corner, Lin lays out names like chess. Yu admits what he cannot print on paper. The alliance stops being convenient and becomes chosen.',
+            location: 'Forbidden Garden',
+            fullDescription: '',
+            involvedCharacterIds: [2, 4],
+            isCanon: true,
+            tags: ['alliance']
+        },
+        {
+            id: 10,
+            title: "Minister Cui's net tightens",
+            period: 'Ep 4–5',
+            order: 9,
+            beat: '6',
+            description: 'A chancellery memo travels faster than horses: “foreign methods,” “unregistered stills,” “prince-shaped rumors.” Cui does not accuse; he arranges.',
+            location: 'Daming Palace',
+            fullDescription: '',
+            involvedCharacterIds: [5, 2],
+            isCanon: true,
+            tags: ['antagonist-pressure']
+        },
+        {
+            id: 11,
+            title: 'Secret Metropolis: smoke on the horizon (draft)',
+            period: 'Ep 5+ outline',
+            order: 10,
+            beat: '4',
+            description: 'PLACEHOLDER: whispers of a river-bend settlement where “sky metal” is traded—prep for later arc; do not resolve on-screen yet.',
+            location: 'Secret Metropolis',
+            fullDescription: 'Draft beat for industrial/spy thread; keep details sparse until research pass.',
+            involvedCharacterIds: [],
+            isCanon: false,
+            tags: ['draft']
+        },
+        {
+            id: 12,
+            title: 'Paper pulp trial at the market sheds (draft)',
+            period: 'Ep 5+ outline',
+            order: 11,
+            beat: '4',
+            description: 'PLACEHOLDER: Feng tests fiber length for forged travel permits vs. legitimate bills—legal drama hook.',
+            location: 'Imperial Market Square',
+            fullDescription: '',
+            involvedCharacterIds: [1],
+            isCanon: false,
+            tags: ['draft', 'paper']
+        },
+        {
+            id: 13,
+            title: 'Manor drill: spear wall in the mud (draft)',
+            period: 'Ep 5+ outline',
+            order: 12,
+            beat: '3',
+            description: 'PLACEHOLDER: Lu runs recruits; Feng introduces simple whistle signals—culture clash as comedy and dread.',
+            location: 'Disgraced Manor',
+            fullDescription: '',
+            involvedCharacterIds: [1, 3],
+            isCanon: false,
+            tags: ['draft', 'training']
+        },
+        {
+            id: 14,
+            title: 'Grey Dragon toll dispute — whose seal counts? (draft)',
+            period: 'Ep 5+ outline',
+            order: 13,
+            beat: '6',
+            description: 'PLACEHOLDER: bureaucratic violence; a seal ring that does not match the roster.',
+            location: 'Grey Dragon Road',
+            fullDescription: '',
+            involvedCharacterIds: [3, 5],
+            isCanon: false,
+            tags: ['draft']
+        },
+        {
+            id: 15,
+            title: 'Second storm omen at the cave mouth (draft)',
+            period: 'Ep 6+ outline',
+            order: 14,
+            beat: '2',
+            description: 'PLACEHOLDER: portal instability returns—physical stakes, not mystic babble.',
+            location: 'Time Portal Cave',
+            fullDescription: '',
+            involvedCharacterIds: [1],
+            isCanon: false,
+            tags: ['draft', 'portal']
+        }
+    ];
+
+    const plot = [
+        {
+            act: 'Act I — Ash, Manor, First Flame',
+            content: 'Feng crosses from the cave into disgrace and duty. The still (“Dragon’s Breath”) becomes proof they can fight on Tang terms: trade, training, and secrecy—not speeches.'
+        },
+        {
+            act: 'Act II — Market Eyes, Road Blood, Palace Shadow',
+            content: 'Visibility buys leverage and enemies. Yu’s incognito frays; Cui arranges without shouting. The Ghost Border stops being geography and becomes a ledger of who is allowed to live.'
+        },
+        {
+            act: 'Act III — Steel, Paper, Throne',
+            content: 'Industrial edges (paper, distillation, signals) collide with court law. Feng must choose what “home” means when the portal storms again and Yu’s name is forced into the open.'
+        }
+    ];
+
+    const politics = [
+        {
+            section: 'Chancellery vs. border realism',
+            content: 'Minister Cui Hang controls memoranda, impeachment rhythms, and “economic morality.” The Feng branch survives in the cracks: small stills, tolerated smuggling routes, marriage webs Lady Lin tends.'
+        },
+        {
+            section: 'Prince Yu’s survival politics',
+            content: 'Yu is not hiding for romance—he is buying time after betrayal. Incognito travel lets him see which commanders still move like Tang soldiers, not landlord thugs.'
+        },
+        {
+            section: 'Military logistics (Tang-grounded)',
+            content: 'Granaries, relay horses, corvée labor, and river barges matter more than duels. Commander Lu’s legitimacy is tied to men fed on schedule; Feng’s modern sense of throughput reads as sorcery until it eats.'
+        },
+        {
+            section: 'Antagonist philosophy',
+            content: 'Cui does not sneer at technology—he weaponizes regulation. Paper trails beat swords if the ink is the right color.'
+        }
+    ];
+
+    const workItems = [
+        { id: 1, title: 'Research Tang distillation, salt monopoly, and sulfur availability (Ghost Border counties)', category: 'Historical Research', completed: true, isCanon: true, tags: ['canon'] },
+        { id: 2, title: "Blueprint v1 of the 'Dragon's Breath' pot still (copper, clay, safety fail-modes)", category: 'Worldbuilding', completed: true, isCanon: true, tags: ['canon', 'still'] },
+        { id: 3, title: 'Paper fiber tests for forged travel permits vs. legitimate chancellery stock', category: 'Historical Research', completed: false, isCanon: true, tags: ['canon', 'paper'] },
+        { id: 4, title: 'Drill script: spear wall + whistle signals (manor yard, mud, comedy/dread)', category: 'Scene Planning', completed: false, isCanon: true, tags: ['canon', 'training'] },
+        { id: 5, title: 'Map Grey Dragon Road toll stations, bribes, and roster seal patterns', category: 'Worldbuilding', completed: false, isCanon: true, tags: ['canon'] },
+        { id: 6, title: "Vet Prince Yu's cover story against court genealogy records (what Cui can check)", category: 'Character Development', completed: false, isCanon: true, tags: ['canon'] },
+        { id: 7, title: 'Minister Cui Hang: client list, impeachment habits, favorite clerks (antagonist bible)', category: 'Character Development', completed: false, isCanon: true, tags: ['canon'] },
+        { id: 8, title: 'Episode 4: cold open — Daming Palace drums from pilgrim distance (shot list)', category: 'Scene Planning', completed: false, isCanon: false, tags: ['draft'] },
+        { id: 9, title: 'Secret Metropolis thread: what “sky metal” rumor means materially (research)', category: 'Plot Holes', completed: false, isCanon: false, tags: ['draft'] },
+        { id: 10, title: 'Write courtyard first-meet dialogue (Feng / Yu / Lu) — no rank reveal on page', category: 'Dialogue', completed: false, isCanon: true, tags: ['canon'] }
+    ];
+
+    return { characters, events, plot, politics, workItems };
+}
+
+export const StorageService = {
     /**
      * Initialize default story data
      */
     initializeStoryData() {
+        const core = getGhostBorderCanonStoryCore();
         return {
-            characters: [
-                {
-                    id: 1,
-                    name: "Main Character",
-                    age: 38,
-                    role: "Scientist",
-                    type: "friendly",
-                    background: "A brilliant scientist who accidentally discovers a way to time travel during an experiment.",
-                    personality: "Intelligent, curious, compassionate. Struggles with guilt and responsibility.",
-                    relatedCharacters: [2, 3],
-                    notes: "Must learn to trust her heart over logic.",
-                    isCanon: true,
-                    tags: []
-                },
-                {
-                    id: 2,
-                    name: "Prince",
-                    age: 23,
-                    role: "Royal",
-                    type: "friendly",
-                    background: "A young prince hiding his true identity to understand his people.",
-                    personality: "Charming, idealistic, struggling with duty vs. desire.",
-                    relatedCharacters: [1, 4],
-                    notes: "Secret identity crucial to plot development.",
-                    isCanon: true,
-                    tags: []
-                },
-                {
-                    id: 3,
-                    name: "Antagonist",
-                    age: 62,
-                    role: "Court Official",
-                    type: "antagonist",
-                    background: "Powerful court member seeking to consolidate power and eliminate threats.",
-                    personality: "Calculating, ambitious, manipulative.",
-                    relatedCharacters: [4, 5],
-                    notes: "Represents the old order that must be challenged.",
-                    isCanon: true,
-                    tags: []
-                },
-                {
-                    id: 4,
-                    name: "Bad Guy's Son",
-                    age: 28,
-                    role: "Soldier",
-                    type: "gray",
-                    background: "Son of the antagonist, forced to choose between family and morality.",
-                    personality: "Conflicted, honorable, driven by conscience.",
-                    relatedCharacters: [2, 3],
-                    notes: "Potential ally despite family connections.",
-                    isCanon: true,
-                    tags: []
-                },
-                {
-                    id: 5,
-                    name: "Emperor",
-                    age: 55,
-                    role: "Ruler",
-                    type: "gray",
-                    background: "The aging emperor, wanting to see real change but constrained by tradition.",
-                    personality: "Wise but weary, progressive but cautious.",
-                    relatedCharacters: [2, 3],
-                    notes: "Key to legitimizing reform.",
-                    isCanon: true,
-                    tags: []
-                }
-            ],
-            events: [
-                { id: 1, title: "Before Time Travel", period: "Prologue", order: 0, beat: "1", description: "Main character discovers experimental results", fullDescription: "", involvedCharacterIds: [], isCanon: true, tags: [] },
-                { id: 2, title: "Time Travel Accident", period: "Act 1", order: 1, beat: "3", description: "Transported to Tang Dynasty during experiment", fullDescription: "", involvedCharacterIds: [], isCanon: true, tags: [] },
-                { id: 3, title: "Meets the Prince", period: "Act 1", order: 2, beat: "5", description: "Encounters prince incognito in market", fullDescription: "", involvedCharacterIds: [], isCanon: true, tags: [] },
-                { id: 4, title: "Court Conflict Escalates", period: "Act 2", order: 3, beat: "4", description: "Antagonist discovers her origins", fullDescription: "", involvedCharacterIds: [], isCanon: true, tags: [] },
-                { id: 5, title: "Final Arc", period: "Act 3", order: 4, beat: "8", description: "Confrontation with antagonist and choice about future", fullDescription: "", involvedCharacterIds: [], isCanon: true, tags: [] }
-            ],
-            plot: [
-                { act: "Act 1: Crossing Thresholds", content: "Main character discovers time travel and is transported. Must adapt to Tang Dynasty while hiding her origins." },
-                { act: "Act 2: Road of Trials", content: "Political intrigue intensifies. Antagonist grows suspicious. Romance with prince deepens conflict." },
-                { act: "Act 3: The Confrontation", content: "Truth is revealed. Must choose between returning to modern time or staying in Tang Dynasty." },
-                { act: "Act 4: Transformation", content: "Resolution addresses both romance and political changes. Character transformation complete." }
-            ],
-            politics: [
-                { section: "Court Structure", content: "The Tang Dynasty court has multiple factions competing for influence. Emperor as ultimate authority but limited by tradition." },
-                { section: "Factions", content: "Conservative faction led by Antagonist vs. Progressive faction around the Prince and Emperor." },
-                { section: "Prince's Backstory", content: "Prince is testing court officials to find loyal allies. His disguise allows him to judge character beyond rank." },
-                { section: "Military", content: "Army control is key to power. Bad Guy's Son leads important military faction, creating tension." }
-            ],
-            workItems: [
-                { id: 1, title: "Research Tang Dynasty etiquette and customs", category: "Historical Research", completed: false, isCanon: false, tags: [] },
-                { id: 2, title: "Develop prince's secret identity revelation scene", category: "Character Development", completed: false, isCanon: false, tags: [] },
-                { id: 3, title: "Resolve how main character can return to future", category: "Plot Holes", completed: false, isCanon: false, tags: [] },
-                { id: 4, title: "Detail the mechanism of time travel", category: "Worldbuilding", completed: false, isCanon: false, tags: [] },
-                { id: 5, title: "Write first encounter dialogue between main character and prince", category: "Dialogue", completed: false, isCanon: false, tags: [] },
-                { id: 6, title: "Plan antagonist's discovery scene", category: "Scene Planning", completed: false, isCanon: false, tags: [] },
-                { id: 7, title: "Research historical events of chosen time period", category: "Historical Research", completed: false, isCanon: false, tags: [] },
-                { id: 8, title: "Flesh out supporting character arcs", category: "Character Development", completed: false, isCanon: false, tags: [] },
-                { id: 9, title: "Clarify the love triangle dynamics", category: "Plot Holes", completed: false, isCanon: false, tags: [] },
-                { id: 10, title: "Develop magic/science system rules", category: "Worldbuilding", completed: false, isCanon: false, tags: [] },
-                { id: 11, title: "Write major action sequence", category: "Dialogue", completed: false, isCanon: false, tags: [] },
-                { id: 12, title: "Plan final confrontation beats", category: "Scene Planning", completed: false, isCanon: false, tags: [] },
-                { id: 13, title: "Research royal politics and power structures", category: "Historical Research", completed: false, isCanon: false, tags: [] },
-                { id: 14, title: "Define antagonist's motivation in depth", category: "Character Development", completed: false, isCanon: false, tags: [] },
-                { id: 15, title: "Plan romantic tension throughout acts", category: "Plot Holes", completed: false, isCanon: false, tags: [] },
-                { id: 16, title: "Create detailed era-appropriate settings", category: "Worldbuilding", completed: false, isCanon: false, tags: [] },
-                { id: 17, title: "Write climactic dialogue scenes", category: "Dialogue", completed: false, isCanon: false, tags: [] },
-                { id: 18, title: "Map emotional beats for each character", category: "Scene Planning", completed: false, isCanon: false, tags: [] }
-            ],
+            ...core,
             aiReports: [],
             aiVisuals: [],
             masterDocument: {
                 version: 1,
-                format: "markdown",
+                format: 'markdown',
                 updatedAt: null,
-                text: ""
+                text: ''
             },
             visualStoryboard: {
                 version: 1,
                 items: []
+            },
+            storyWorldMapGallery: {
+                version: 1,
+                items: []
             }
         };
+    },
+
+    /**
+     * Replace persisted story with the built-in **Ghost Border — The Disgraced Grandson** canon
+     * (see `getGhostBorderCanonStoryCore()`): Feng, Prince Yu, mapped timeline locations, protected beats.
+     * @returns {object}
+     */
+    loadDefaultStory() {
+        const data = this.initializeStoryData();
+        this.saveStoryData(data);
+        return data;
     },
 
     /**
@@ -191,6 +526,17 @@ const StorageService = {
                     parsed.visualStoryboard.items = [];
                 }
             }
+            if (!parsed.storyWorldMapGallery || typeof parsed.storyWorldMapGallery !== 'object') {
+                parsed.storyWorldMapGallery = defaults.storyWorldMapGallery;
+            } else {
+                parsed.storyWorldMapGallery = {
+                    ...defaults.storyWorldMapGallery,
+                    ...parsed.storyWorldMapGallery
+                };
+                if (!Array.isArray(parsed.storyWorldMapGallery.items)) {
+                    parsed.storyWorldMapGallery.items = [];
+                }
+            }
 
             // Migration: ensure timeline events can store involved characters.
             if (Array.isArray(parsed.events)) {
@@ -204,6 +550,9 @@ const StorageService = {
                     }
                     if (!Array.isArray(e.tags)) {
                         e.tags = [];
+                    }
+                    if (typeof e.location !== 'string') {
+                        e.location = '';
                     }
                     return e;
                 });
@@ -335,7 +684,7 @@ const StorageService = {
         if (!notes) {
             throw new Error('No notes provided.');
         }
-        if (typeof AIService === 'undefined' || !AIService.callAI) {
+        if (typeof globalThis.AIService === 'undefined' || !globalThis.AIService?.callAI) {
             throw new Error('AIService is not available.');
         }
 
@@ -372,7 +721,7 @@ ${JSON.stringify(canonBrief, null, 2)}
 NOTES:
 ${notes}`;
 
-        const raw = await AIService.callAI(prompt, 900);
+        const raw = await globalThis.AIService.callAI(prompt, 900);
         const parsed = this.parsePossiblyWrappedJSON(raw);
         return this.normalizeImportedNotes(parsed);
     },
@@ -424,6 +773,7 @@ ${notes}`;
                 title: safeStr(e?.title),
                 description: safeStr(e?.description),
                 beatType: safeStr(e?.beatType),
+                location: safeStr(e?.location),
                 orderHint: Number.isFinite(Number(e?.orderHint)) ? Number(e.orderHint) : null
             })).filter(e => e.title),
 
@@ -490,3 +840,6 @@ ${notes}`;
         }
     }
 };
+
+// Keep legacy global access for inline onclick handlers.
+globalThis.StorageService = StorageService;

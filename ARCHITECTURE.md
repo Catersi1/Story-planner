@@ -15,13 +15,14 @@ The app is designed to help a writer move from concept to actionable revision an
 
 The app is a static frontend application with modular JavaScript files:
 
-- `index.html` - full UI shell and tab layout.
+- `index.html` - full UI shell and tab layout; pulls in tab section markup from `js/components/*.js`.
 - `css/styles.css` - component and layout styles.
 - `js/storage.js` - localStorage persistence and default data initialization.
 - `js/ai-service.js` - AI integration layer (text analysis + image generation endpoint adapter).
-- `js/app.js` - UI state management, rendering, events, orchestration.
+- `js/app.js` - UI state management, rendering, events, orchestration (including Ghost Border map overlay).
+- `js/components/` - `tabs.js`, `Dashboard.js`, `Timeline.js`, `Visualizer.js`, `Characters.js`, and other tab templates returned as HTML strings.
 
-There is no backend server requirement for business logic. During development, a static server (`http-server`) is used to serve files.
+There is no backend server requirement for business logic. During development, a static server (`npm run dev` / `http-server`) is used to serve files.
 
 ## 3) Runtime Model
 
@@ -46,6 +47,7 @@ Primary app singleton:
 - Runs AI analyses directly.
 - Displays AI action queue (extracted actionable lines from report history).
 - Shows saved AI reports with action buttons.
+- Story momentum and **story locations overview** (timeline events grouped by `location`, with jump to Timeline).
 
 ### Characters
 
@@ -59,8 +61,8 @@ Primary app singleton:
 
 - Add timeline events mapped to Dan Harmon Story Circle beats.
 - Visual circle with clickable event markers.
-- Timeline list with clickable event titles for edit.
-- Edit event details (title, period, beat, short and long descriptions).
+- Timeline list with draggable reorder (`order`), spotlight navigation from other tabs (`focusTimelineEvent`).
+- Edit event details (title, period, beat, short and long descriptions, **`location`**, involved characters, canon flag).
 
 ### Plot / Politics
 
@@ -88,10 +90,15 @@ Primary app singleton:
 
 ### AI Visualizer
 
-- Generate storyboard-like images from Timeline, Plot, or both.
-- Customize scene count and style prompt.
-- Persist generated visuals in local story data.
-- Clear visual gallery.
+- **Story World Map – Ghost Border Region**: static Tang-era SVG background (`ghostBorderMapBackground` in `Visualizer.js`); dynamic layer `ghostBorderMapOverlay` populated by `App.renderGhostBorderInteractiveMap()` from `App.storyData.events`.
+  - Events sorted by `order` (then `id`); smooth **purple path** through resolved coordinates; optional **dashed** segments when a simple heuristic detects time-travel–style jumps between locations.
+  - **Pins** only when `location` is non-empty; coordinates from `App.GHOST_BORDER_LOCATION_COORDS` plus `GHOST_BORDER_LOCATION_ALIASES` (unknown strings get a deterministic hash offset so the path still connects).
+  - Pin **tooltip**: beat + short title; **gold shield** when `isCanon`; **click** calls `focusTimelineEvent(id)` → Timeline tab + scroll/highlight.
+  - In-map **legend** (bottom-right of SVG). Refresh also runs from `renderStoryWorldMap()` (`try/finally`) and after `renderTimelineWithCircle()` so the map stays current when the timeline changes without a full `render()`.
+- Legacy/alternate **story world map** mount (`#storyWorldMapMount` when present): separate SVG map with pins/route and Grok prompt sync.
+- Generate storyboard-like images from Timeline, Plot, or both; **visual storyboard** state in `storyData.visualStoryboard`.
+- **storyWorldMapGallery**: persisted thumbnails from the configured image API.
+- Customize scene count and style prompt; clear galleries where supported.
 
 ## 5) Data Model
 
@@ -100,7 +107,7 @@ Main object in localStorage key `storyData` (managed by `StorageService`):
 - `characters[]`
   - `id`, `name`, `age`, `role`, `type`, `background`, `personality`, `relatedCharacters[]`, `notes`
 - `events[]`
-  - `id`, `title`, `period`, `order`, `beat`, `description`, `fullDescription`
+  - `id`, `title`, `period`, `order`, `beat`, `description`, `location`, `fullDescription`, `involvedCharacterIds[]`, `isCanon`, `tags[]`
 - `plot[]`
   - `act`, `content`
 - `politics[]`
@@ -111,6 +118,8 @@ Main object in localStorage key `storyData` (managed by `StorageService`):
   - `id`, `type`, `title`, `content`, `status`, `createdAt`
 - `aiVisuals[]`
   - `id`, `prompt`, `imageUrl`, `createdAt`
+- `visualStoryboard` — `{ version, items[] }` for pasted/generated scene art keyed to timeline beats.
+- `storyWorldMapGallery` — `{ items[] }` for realm map images from the image API.
 
 AI settings object in localStorage key `aiSettings`:
 
@@ -179,11 +188,13 @@ Core pattern:
 Key renderers:
 
 - `renderCharacters()`
-- `renderTimelineWithCircle()`
+- `renderTimelineWithCircle()` (also calls `renderGhostBorderInteractiveMap()` when timeline DOM is present or skipped)
 - `renderWorkItems()`
 - `renderAIReports()`
 - `renderAIActionItems()`
 - `renderVisualGallery()`
+- `renderStoryWorldMap()` / `renderStoryWorldMapGallery()` / `renderGhostBorderInteractiveMap()`
+- `renderStoryLocationsOverview()` (Dashboard + Visualizer)
 - `updateDashboard()`
 
 ## 9) Interaction and Navigation Patterns
@@ -231,14 +242,24 @@ Recommended next evolutions:
 - `index.html`
   - Tabs, containers, and script loading order.
 - `css/styles.css`
-  - Layout, cards, tabs, modals, AI status/results/action queue, visual gallery.
+  - Layout, cards, tabs, modals, AI status/results/action queue, visual gallery, Ghost Border pin hover styles (`#ghostBorderStoryMapSvg .ghost-border-map-pin`).
 - `js/storage.js`
-  - Default dataset, migration-safe load/save helpers.
+  - Default dataset, migration-safe load/save helpers; timeline event factory helpers and location presets where defined.
 - `js/ai-service.js`
-  - Text AI and image API calls, connection normalization, response parsing.
+  - Text AI and image API calls, connection normalization, response parsing; story-world-map Grok-style prompt builder.
 - `js/app.js`
-  - App controller: state, rendering, CRUD actions, AI orchestration, visualizer flows, modal lifecycle.
+  - App controller: state, rendering, CRUD actions, AI orchestration, visualizer flows, modal lifecycle, Ghost Border overlay generation, tab switching.
+- `js/components/Visualizer.js`
+  - Ghost Border static SVG, overlay group mount, storyboard UI, map refresh buttons.
 
 ---
 
-This document should be updated whenever new tabs, data fields, AI integrations, or major UX flows are introduced.
+## 15) Documentation change log
+
+| When (local) | Summary |
+|----------------|----------|
+| **2026-04-26 17:37 CDT** | Documented modular `js/components/`, Ghost Border interactive map pipeline, dashboard location overview, extended `storyData` keys, renderer list; aligned with README change-log policy. |
+
+*Append a new dated/time-stamped row after every **major** behavioral, data-model, or cross-cutting UI change.*
+
+This document should be updated whenever new tabs, data fields, AI integrations, or major UX flows are introduced—**with date and time** in section 15 (and mirror the same entry in `README.md` § Change log when appropriate).
